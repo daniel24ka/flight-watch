@@ -221,7 +221,12 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   not recognised as such (Wizz-style callsigns, private jets): they fly straight in, so the
   turn requirement keeps them quiet; route data now recognises most of them. Jordan is ~40 nm from the border, so a looser rule (30 min,
   30 deg) flagged 12 routine Amman/Damascus movements in the replay.
-- **Hot flights**: any alert makes a flight followed and hot for `--hot-minutes` (20): queried
+- **Hot flights**: any alert makes a flight followed, and any anomaly except a lone LOST_CONTACT makes it hot
+  (silence alone is mostly a coverage gap and asking for a silent aircraft every cycle finds nothing; it is hot
+  when another anomaly came within `--hot-minutes`; 11 Oct 2026. Refusals do not come from this: in the run of
+  10-11 Oct each hour had ~120 answered and ~240 refused local polls whatever the alerts - the 10 s poll against
+  ~2 req/min allowed; the status line now counts hot flights and those followed only for lost contact).
+  Hot lasts `--hot-minutes` (20): queried
   every cycle instead of every `--follow-interval`, every anomaly reported (no terminal or
   route-corner exemptions), and two different anomalies within that time are sent at
   priority 5 with `[also: ...]`.
@@ -291,7 +296,7 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
 ## Links in alerts (no local storage)
 
 `map` (our `docs/flight_map.html?hex=<hex>&f=<flight>&d=<A|D>&t=<alert time>` on GitHub Pages, `--viewer-url`; first
-link in posts; with `t` the page shows the flight of the alert whenever it is opened, see Flight pages), `fr24_flight` (`/data/flights/fz1073`, flight number from the board or callsign → IATA),
+link in posts, which then leave out Live; with `t` the page shows the flight of the alert whenever it is opened, see Flight pages), `fr24_flight` (`/data/flights/fz1073`, flight number from the board or callsign → IATA),
 `fr24_aircraft` (by registration), `live_adsbx` / `live`, `replay_adsbx` / `replay`
 (`?icao=<hex>&showTrace=<UTC date>&timestamp=<alert time>`: that day's whole track with the aircraft
 placed at the alert; a live link opened later shows whatever the aircraft flies then). ADS-B Exchange replays proved more reliable for older

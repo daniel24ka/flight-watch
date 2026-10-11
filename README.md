@@ -109,7 +109,7 @@ It runs until stopped (Ctrl+C). By default the terminal shows the first aircraft
 line per alert (Israel time, flight and airline, route when known, alert type), plus errors:
 
 ```
-22:52:11  watching TLV: 22 aircraft within 150 nm, 487 scheduled flights
+22:52:11  watching TLV: 22 aircraft within 150 nm, 487 scheduled flights; Telegram off (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID not in the environment)
 19:53:16  SHUFL (military)  POSITION_JUMP
 08:22:10  FZ1073 Flydubai  Dubai (DXB) → TLV  VERTICAL_RATE
 ```
@@ -139,7 +139,7 @@ No flight tracks are stored. Each alert is one line in `alerts.jsonl` with links
   ADS-B Exchange keeps older days more reliably; airplanes.live may show "No data" later.
 
 Tapping an ntfy notification opens the ADS-B Exchange live view; its buttons are
-Live, Replay (ADSBx) and FR24 flight. Telegram messages read like the posts (Map · Live · Replay · FR24).
+Live, Replay (ADSBx) and FR24 flight. Telegram messages read like the posts (Map · Replay · FR24; Map is live while the flight flies).
 
 Distant flights can be queried on several networks (`--remote-providers`, default `adsb.lol`;
 e.g. `adsb.lol,adsb.fi`) because coverage outside Israel differs between them. A network that

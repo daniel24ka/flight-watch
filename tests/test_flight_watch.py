@@ -181,6 +181,16 @@ class AlertSimulation(unittest.TestCase):
         lost = [a for a in alerts if a["kind"] == "LOST_CONTACT"]
         self.assertEqual(len(lost), 1)
         self.assertEqual(lost[0]["hex"], "738001")
+        t = mon.tracks["738001"]  # silence alone: followed (why is kept for the log), but not hot
+        self.assertTrue(t.followed)
+        self.assertEqual(t.follow_why, "LOST_CONTACT")
+        self.assertFalse(mon.hot(t))
+        self.assertEqual((mon.stats["hot"], mon.stats["followed_lost"]), (0, 1))
+        t.lost_alerted = False
+        t.alerted["VERTICAL_RATE"] = (t.last.t, 1)   # with another anomaly it is a pattern: hot
+        self.assertTrue(mon.alert(t, "LOST_CONTACT", "silent again", force=True))
+        self.assertIn("[also: VERTICAL_RATE]", alerts[-1]["message"])
+        self.assertGreater(t.hot_until, t.last.t)
 
     def test_heard_again_within_lost_confirm_is_not_lost(self):
         mon, feed, clock, alerts = make(["--no-routes"])
@@ -1386,7 +1396,9 @@ class AnnouncerTests(unittest.TestCase):
         rec = alert_rec("TOWARD_ISRAEL", "not bound for Israel " + "x" * 400)
         rec["links"] = {"map": links["map"], **rec["links"]}
         post = ann.announce(rec)
-        self.assertEqual([s["link"] for s in post["segments"] if "link" in s], ["Map", "Live", "Replay", "FR24"])
+        self.assertEqual([s["link"] for s in post["segments"] if "link" in s], ["Map", "Replay", "FR24"])
+        self.assertEqual([s["link"] for s in ann.compose(alert_rec("EMERGENCY", "squawk 7700"), False) if "link" in s],
+                         ["Live", "Replay", "FR24"])  # no map page (--viewer-url ''): the live link stays
         self.assertLessEqual(len(post["text"]), fw.Announcer.LIMIT)
 
     def test_post_names_airline_military_and_unknown_route(self):
@@ -1419,7 +1431,8 @@ class AnnouncerTests(unittest.TestCase):
             def post(self, url, **kw):
                 self.calls.append(kw["json"])
         saved = os.path.join(tempfile.mkdtemp(), "posts_telegram.jsonl")
-        args = fw.parse_args(["--jsonl", "", "--posts", "", "--turn-zones", "", "--telegram-posts", saved])
+        args = fw.parse_args(["--jsonl", "", "--posts", "", "--turn-zones", "", "--telegram-posts", saved,
+                              "--telegram-skip", "LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP"])
         http = Sent()
         with mock.patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "@c"}):
             n = fw.Notifier(args, http, fw.Announcer(args, out=lambda text: None), console=lambda text: None)

@@ -588,6 +588,7 @@ class Track:
     last_msg: float = 0.0
     lost: bool = False
     followed: bool = False
+    follow_why: str = ""     # "airport" (a TLV arrival / departure), or the kind of its first alert
     was_airborne: bool = False
     max_dist: float = 0.0
     sched: SchedFlight | None = None
@@ -921,7 +922,8 @@ class Announcer:
         when = datetime.fromisoformat(rec["time"].replace("Z", "+00:00")).astimezone(self.tz)
         stamp = f"{when:%H:%M} {when.tzname()}"
         detail = self.detail(rec)
-        links = [("Map", rec["links"].get("map")), ("Live", rec["links"].get("live_adsbx")),
+        our = rec["links"].get("map")  # our page shows the flight live while it flies: no separate Live link
+        links = [("Map", our), ("Live", None if our else rec["links"].get("live_adsbx")),
                  ("Replay", rec["links"].get("replay_adsbx")),
                  ("FR24", rec["links"].get("fr24_flight"))]
         links = [(k, v) for k, v in links if v]
@@ -1479,6 +1481,8 @@ class Monitor:
                        if server_now - t.last_msg < (3 * 3600 if t.followed else 1800)}
         b = self.http.budget(PROVIDERS[a.provider]["base"].split("/")[2])
         self.stats = {"local": len(local), "followed": sum(t.followed for t in self.tracks.values()),
+                      "hot": sum(t.followed and self.hot(t) for t in self.tracks.values()),
+                      "followed_lost": sum(t.followed and t.follow_why == "LOST_CONTACT" for t in self.tracks.values()),
                       "scheduled": len(self.schedule.flights) if self.schedule else 0,
                       "rate": b.rate}
 
@@ -1506,6 +1510,7 @@ class Monitor:
         kind, route = self.classify(t)
         if not t.followed and (kind in CONFIRMED or (kind == "DEP?" and d < 15 and airline_like(t))):
             t.followed = True
+            t.follow_why = "airport"
             log.info("following %s (%s %s)", t.label(), kind, route or "")
         if t.lost and server_now - t.last_msg < a.lost_after:
             t.lost = False
@@ -2375,9 +2380,13 @@ class Monitor:
         pattern = kind in ANOMALIES and bool(recent)
         t.alerted[key] = (now, max(severity, last_sev if now - last_t < a.cooldown else 0))
         if not t.followed:
-            log.info("following %s (alerted)", t.label())
+            t.follow_why = kind
+            log.info("following %s (alerted: %s)", t.label(), kind)
         t.followed = True  # keep its fate visible wherever it goes
-        if kind in ANOMALIES:
+        # Silence alone is mostly a coverage gap (157 of 429 alerts, 10-11 Oct 2026) and asking for a
+        # silent aircraft every cycle finds nothing: followed at --follow-interval, hot only with
+        # another anomaly within --hot-minutes.
+        if kind in ANOMALIES and (kind != "LOST_CONTACT" or pattern):
             t.hot_until = max(t.hot_until, now + a.hot_minutes * 60)
             if kind not in SPOOF_KINDS:
                 t.gps_free_until = max(t.gps_free_until, now + a.hot_minutes * 60)
@@ -2596,6 +2605,11 @@ def main(argv=None) -> None:
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     log.info("watching %s (%s) r=%.0fnm every %.0fs via %s",
              args.airport, args.icao, args.radius, args.interval, args.provider)
+    tg = monitor.notifier  # said at the start: unset (not exported) variables otherwise fail silently
+    missing = [n for n, v in (("TELEGRAM_BOT_TOKEN", tg.tg_token), ("TELEGRAM_CHAT_ID", tg.tg_chat)) if not v]
+    telegram = ("Telegram off (" + ", ".join(missing) + " not in the environment)" if missing else
+                "Telegram on" + (", without " + ", ".join(sorted(tg.tg_skip)) if tg.tg_skip else ""))
+    log.info(telegram)
     local_host = PROVIDERS[args.provider]["base"].split("/")[2]
     backoff, counted = 0.0, False
     while True:
@@ -2606,12 +2620,13 @@ def main(argv=None) -> None:
         try:
             monitor.poll()
             st = monitor.stats
-            log.info("%d local | %d followed globally | %d scheduled flights | budget %.1f req/min",
-                     st["local"], st["followed"], st["scheduled"], st["rate"])
+            log.info("%d local | %d followed globally (%d hot, %d only for lost contact) | %d scheduled flights | "
+                     "budget %.1f req/min", st["local"], st["followed"], st["hot"], st["followed_lost"],
+                     st["scheduled"], st["rate"])
             if not args.verbose and not counted:
                 counted = True
                 print(f"{time.strftime('%H:%M:%S')}  watching {args.airport}: {st['local']} aircraft within "
-                      f"{args.radius:.0f} nm, {st['scheduled']} scheduled flights", flush=True)
+                      f"{args.radius:.0f} nm, {st['scheduled']} scheduled flights; {telegram}", flush=True)
             backoff = 0.0
         except Throttled as e:
             # Cooling down after a 429: skip this cycle's local poll but keep the --interval
