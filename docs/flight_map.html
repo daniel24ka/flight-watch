@@ -15,6 +15,8 @@ html,body{margin:0;height:100%;font-family:sans-serif;color:#222;background:#fff
       padding:8px 10px;font-size:13px;max-width:330px;line-height:1.45}
 #info table{border-collapse:collapse} #info td{padding:0 6px 0 0;vertical-align:top} #info td:first-child{color:#666}
 .warn{color:#a01a12;font-weight:bold} .note{color:#666;font-size:12px}
+.stale{background:#fff3cd;border:1px solid #e0b000;border-radius:4px;padding:6px 8px;margin:4px 0;font-size:13px}
+.stale a{white-space:nowrap}
 .credits{position:absolute;bottom:0;left:0;right:0;z-index:2;font-size:10px;color:#555;background:rgba(255,255,255,.8);padding:2px 6px}
 @media (max-width:600px){#info{max-width:none;right:8px;font-size:12px}}
 </style></head><body>
@@ -53,10 +55,25 @@ const map = new deck.DeckGL({container: "map", controller: true,
   initialViewState: {longitude: FB.HOME.lon, latitude: FB.HOME.lat, zoom: 6},
   getTooltip: ({object}) => object && object.tip ? {html: object.tip} : null});
 
+/** Live on other sites: ADS-B Exchange by aircraft (when known), Flightradar24 by flight number. */
+function liveElsewhere() {
+  const hex = cur && (cur.ac ? cur.ac.hex : cur.hex), fl = cur && cur.f.flight;
+  return [hex && `<a href="https://globe.adsbexchange.com/?icao=${encodeURIComponent(hex)}" target="_blank" rel="noopener">ADS-B Exchange ↗</a>`,
+          fl && `<a href="https://www.flightradar24.com/data/flights/${encodeURIComponent(fl.toLowerCase())}" target="_blank" rel="noopener">Flightradar24 ↗</a>`]
+    .filter(Boolean).join(" · ");
+}
+
 function feedError(e) {
-  if (/HTTP 429/.test(e.message)) return "<div class='note'>The live feed is busy (HTTP 429) - it is asked again in a while." +
-    (cur && cur.fromTrace ? " Meanwhile the blue line is the aircraft's track from adsb.lol's trace files, the dot its last point" +
-                            " (" + esc(FB.fmt(cur.trail[cur.trail.length - 1].t, ZONE, "hm")) + "); the buttons above show it live on other sites." : "") + "</div>";
+  if (/HTTP 429/.test(e.message)) {  // adsb.lol refuses the relay's (Cloudflare's shared) addresses now and then
+    const last = cur && cur.trail.length ? cur.trail[cur.trail.length - 1] : null;
+    const shown = cur && cur.ac && cur.liveAt ? `the position from ${esc(FB.fmt(cur.liveAt, ZONE, "hms"))}`
+      : cur && cur.fromTrace && last ? `its track from adsb.lol's trace files, up to ${esc(FB.fmt(last.t, ZONE, "hms"))}`
+      : "no position";
+    const links = liveElsewhere();
+    return `<div class="stale"><b>⚠ Not updating.</b> The live feed (adsb.lol) is refusing our requests (HTTP 429); ` +
+      `asked again ${cur && cur.retryAt ? "at " + esc(FB.fmt(cur.retryAt, ZONE, "hms")) : "every " + POLL_S + " s"}. ` +
+      `Shown: ${shown}.` + (links ? `<br>Live now on ${links}` : "") + "</div>";
+  }
   if (FB.blocked(e) && !FB.local()) return "<div class='note'>Live positions can't be loaded right now" +
     (FB.RELAY ? " (the relay did not answer)" : ": the feed (adsb.lol) does not let other web sites read it") +
     ". The links below show the flight live.</div>";
@@ -140,6 +157,8 @@ async function show(f, ac, auto, none, hex, tries = 0) {
     }
     cur.ac = ac;
     if (ac) cur.seen = Date.now() / 1000 - (ac.seen || 0);
+    if (ac) cur.liveAt = cur.seen;
+    cur.err = null;
     cur.fetched = Date.now() / 1000;
   } catch (e) {
     cur.err = e;
@@ -147,6 +166,7 @@ async function show(f, ac, auto, none, hex, tries = 0) {
     if (/HTTP 429/.test(e.message)) {  // the feed is busy (adsb.lol limits the relay's Cloudflare addresses)
       if (hex || f.callsigns.length) await busyTrack(f, hex);
       const me = cur, wait = Math.min(120, 20 * 2 ** tries);  // 20, 40, 80, 120 s ...
+      cur.retryAt = Date.now() / 1000 + wait;
       setTimeout(() => { if (cur === me) show(f, null, auto, none, hex, tries + 1); }, wait * 1000);
     }
   }
@@ -228,11 +248,13 @@ async function poll() {
     if (ac) {
       cur.ac = ac;
       cur.seen = Date.now() / 1000 - (ac.seen || 0);
+      cur.liveAt = cur.seen;
       const last = cur.trail[cur.trail.length - 1];
       if (ac.lat != null && (!last || last.lat !== ac.lat || last.lon !== ac.lon))
         cur.trail.push({t: cur.seen, lat: ac.lat, lon: ac.lon, alt: ac.alt_baro});
     }
     cur.err = null;
+    cur.retryAt = null;
     if (cur.auto && cur.f.dir === "ARR" && ac && FB.onGround(ac) &&
         FB.haversineNm(ac.lat, ac.lon, FB.HOME.lat, FB.HOME.lon) < 8) {
       cur.msg = "landed - showing the next arrival in a minute";
@@ -282,7 +304,9 @@ function render() {
     `<div class="note">${links}` +
     `${cur.auto ? " · picked automatically: the arrival closest to landing" : ""}</div>`;
   const lastPt = cur.trail.length ? cur.trail[cur.trail.length - 1] : null;
-  $("status").textContent = ac ? `live, updated every ${POLL_S} s` + (cur.err ? " (feed busy)" : "")
+  $("status").className = cur.err ? "warn" : "note";
+  $("status").textContent = cur.err && /HTTP 429/.test(cur.err.message) ? "⚠ not updating - the feed is busy"
+    : ac ? `live, updated every ${POLL_S} s` + (cur.err ? " (feed busy)" : "")
     : cur.fromTrace && lastPt ? `our data up to ${FB.fmt(lastPt.t, ZONE, "hms")} - ↻ refresh for newer`
     : cur.fetched ? `checked at ${FB.fmt(cur.fetched, ZONE, "hms")}` : "";
   draw();
