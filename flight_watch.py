@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import html
 import io
 import json
 import logging
@@ -312,8 +313,10 @@ def external_links(t: "Track", when: float, viewer: str = "") -> dict:
         links["fr24_aircraft"] = f"https://www.flightradar24.com/data/aircraft/{t.reg.lower()}"
     links["live_adsbx"] = f"https://globe.adsbexchange.com/?icao={t.hex}"
     links["live"] = f"https://globe.airplanes.live/?icao={t.hex}"
-    links["replay_adsbx"] = f"https://globe.adsbexchange.com/?icao={t.hex}&showTrace={day}"
-    links["replay"] = f"https://globe.airplanes.live/?icao={t.hex}&showTrace={day}"
+    # showTrace = that UTC day's whole track; timestamp puts the aircraft where it was at the alert
+    at = f"showTrace={day}&timestamp={int(when)}"
+    links["replay_adsbx"] = f"https://globe.adsbexchange.com/?icao={t.hex}&{at}"
+    links["replay"] = f"https://globe.airplanes.live/?icao={t.hex}&{at}"
     return links
 
 
@@ -1025,6 +1028,7 @@ class Notifier:
         self.announcer = announcer or Announcer(args)
         self.tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.tg_chat = os.getenv("TELEGRAM_CHAT_ID")
+        self.tg_skip = {k.strip().upper() for k in args.telegram_skip.split(",") if k.strip()}
 
     LINK_NAMES = {"map": "Map (flight-watch)", "fr24_flight": "FR24 flight", "fr24_aircraft": "FR24 aircraft",
                   "live_adsbx": "Live (ADSBx)", "live": "Live (airplanes.live)",
@@ -1041,7 +1045,6 @@ class Notifier:
             with open(self.args.jsonl, "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         links = rec["links"]
-        link_lines = "\n".join(f"{self.LINK_NAMES[k]}: {v}" for k, v in links.items())
         main = links["live_adsbx"]  # tapping an alert shows the aircraft right now
         if self.args.ntfy_topic:
             actions = "; ".join(f"view, {self.LINK_NAMES[k]}, {links[k]}"
@@ -1051,10 +1054,24 @@ class Notifier:
                        headers={"Title": f"{rec['kind']} {rec['aircraft']}",
                                 "Priority": str(rec["priority"]), "Tags": "airplane",
                                 "Click": main, "Actions": actions})
-        if self.tg_token and self.tg_chat:
+        if self.tg_token and self.tg_chat and self.telegram_wanted(rec):
             self._post(f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
-                       json={"chat_id": self.tg_chat, "text": f"{text}\n{link_lines}",
-                             "disable_web_page_preview": True})
+                       json={"chat_id": self.tg_chat, "text": self.telegram_text(rec),
+                             "parse_mode": "HTML", "disable_web_page_preview": True})
+
+    def telegram_wanted(self, rec: dict) -> bool:
+        """--telegram-skip kinds are left out, unless the flight also did something not skipped
+        ("[also: ...]": lost contact after a dive is sent, lost contact + position jump is not)."""
+        if rec["kind"] not in self.tg_skip:
+            return True
+        also = re.search(r"\[also: ([^\]]+)\]", rec["message"])
+        return bool(also and {k.strip() for k in also.group(1).split(",")} - self.tg_skip)
+
+    def telegram_text(self, rec: dict) -> str:
+        """The announcement's wording (a top-level post) as Telegram HTML, links as labels."""
+        return "".join(f'<a href="{html.escape(s["url"])}">{html.escape(s["link"])}</a>' if "link" in s
+                       else html.escape(s["text"], quote=False)
+                       for s in self.announcer.compose(rec, reply=False))
 
     @staticmethod
     def row(rec: dict) -> str:
@@ -2506,6 +2523,9 @@ def parse_args(argv=None):
                    help="our flight map page, linked from alerts and posts as 'Map' ('' to leave out)")
     g.add_argument("--thread-hours", type=float, default=6,
                    help="later alerts on a flight reply to its thread for this long")
+    g.add_argument("--telegram-skip", default=os.getenv("TELEGRAM_SKIP", "LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP"),
+                   help="alert kinds not sent to Telegram (still in the files and ntfy), unless the "
+                        "flight also has an alert of another kind ('' sends everything)")
     g.add_argument("--ntfy-topic", default=os.getenv("NTFY_TOPIC"), help="ntfy topic name")
     g.add_argument("--ntfy-server", default=os.getenv("NTFY_SERVER", "https://ntfy.sh"))
     g.add_argument("--log-file", help="also write the full log (as with -v) to this file")

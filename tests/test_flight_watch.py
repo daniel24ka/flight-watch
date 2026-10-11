@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import unittest
+from unittest import mock
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -13,6 +14,9 @@ import requests
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import flight_watch as fw  # noqa: E402
+
+for _name in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_SKIP"):
+    os.environ.pop(_name, None)  # the owner's shell has them: tests must not use the real bot
 
 TLV = (32.0114, 34.8867)
 
@@ -1405,6 +1409,31 @@ class AnnouncerTests(unittest.TestCase):
                          "08:00:00  SHUFL (military)  POSITION_JUMP")
         quiet = fw.Announcer(args)  # without -v the feed goes to posts.jsonl only
         self.assertIsNotNone(quiet.announce(alert_rec("EMERGENCY", "squawk 7700 (GENERAL EMERGENCY)")))
+
+    def test_telegram_skips_common_kinds_and_sends_the_post_wording(self):
+        class Sent:
+            def __init__(self):
+                self.calls = []
+
+            def post(self, url, **kw):
+                self.calls.append(kw["json"])
+        args = fw.parse_args(["--jsonl", "", "--posts", "", "--turn-zones", ""])
+        http = Sent()
+        with mock.patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "@c"}):
+            n = fw.Notifier(args, http, fw.Announcer(args, out=lambda text: None), console=lambda text: None)
+        kw = dict(remote=False, traffic="ARR", route=None)
+        n.send(alert_rec("LOST_CONTACT", "silent 124s; last 5875 ft, 56 nm from TLV, track 165 deg", **kw))
+        n.send(alert_rec("CONTACT_RESTORED", "heard again after 300s", **kw))
+        n.send(alert_rec("POSITION_JUMP", "90.0 nm in 20s (~16200 kt) [also: LOST_CONTACT]", **kw))
+        self.assertEqual(http.calls, [])
+        n.send(alert_rec("LOST_CONTACT", "silent 124s; last 5875 ft, track 165 deg [also: VERTICAL_RATE]",
+                         route_text="A <-> B", **kw))
+        n.send(alert_rec("EMERGENCY", "squawk 7700 (GENERAL EMERGENCY)", **kw))
+        self.assertEqual(len(http.calls), 2)
+        text = http.calls[0]["text"]
+        self.assertEqual(http.calls[0]["parse_mode"], "HTML")
+        self.assertIn("Lost contact: FZ1073 (A6-FKF, B38M) A &lt;-&gt; B - FL150", text)
+        self.assertIn('<a href="https://globe.adsbexchange.com/?icao=8965d1&amp;showTrace=2026-09-30">Replay</a>', text)
 
     def test_long_details_are_cut_to_the_limit(self):
         ann, _ = self.make()

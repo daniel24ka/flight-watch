@@ -116,7 +116,10 @@ line per alert (Israel time, flight and airline, route when known, alert type), 
 
 `-v` shows the full log instead (a status line per cycle, rate limiting, flights followed) and
 the announcement feed; `-vv` adds debug detail. Alerts are appended to `alerts.jsonl` and posts to `posts.jsonl` in the current directory
-(`--jsonl ''` / `--posts ''` to disable). Telegram: set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+(`--jsonl ''` / `--posts ''` to disable). Telegram: set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`
+(a channel where the bot is an admin: `@name` or its `-100...` id; only admins can write there). `--telegram-skip`
+(`TELEGRAM_SKIP`; default `LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP`) leaves those kinds out of Telegram
+unless the flight also has an alert of another kind.
 
 ## Storage and links
 
@@ -128,11 +131,12 @@ No flight tracks are stored. Each alert is one line in `alerts.jsonl` with links
   date to open its playback. Free FR24 accounts only see recent history.
 - `fr24_aircraft` - Flightradar24 history for the registration (works when callsign != flight number).
 - `live_adsbx` / `live` - the aircraft right now on ADS-B Exchange / airplanes.live.
-- `replay_adsbx` / `replay` - full track of that exact aircraft for the UTC day of the alert.
+- `replay_adsbx` / `replay` - full track of that exact aircraft for the UTC day of the alert, with the
+  aircraft placed where it was at the alert (`&timestamp=`). The same at any later time, unlike the live links.
   ADS-B Exchange keeps older days more reliably; airplanes.live may show "No data" later.
 
 Tapping an ntfy notification opens the ADS-B Exchange live view; its buttons are
-Live, Replay (ADSBx) and FR24 flight. Telegram messages list all links.
+Live, Replay (ADSBx) and FR24 flight. Telegram messages read like the posts (Map · Live · Replay · FR24).
 
 Distant flights can be queried on several networks (`--remote-providers`, default `adsb.lol`;
 e.g. `adsb.lol,adsb.fi`) because coverage outside Israel differs between them. A network that

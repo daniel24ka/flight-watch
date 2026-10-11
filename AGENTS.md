@@ -281,8 +281,12 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
 `map` (our `docs/flight_map.html?hex=<hex>&f=<flight>&d=<A|D>` on GitHub Pages, `--viewer-url`; first
 link in posts), `fr24_flight` (`/data/flights/fz1073`, flight number from the board or callsign → IATA),
 `fr24_aircraft` (by registration), `live_adsbx` / `live`, `replay_adsbx` / `replay`
-(`?icao=<hex>&showTrace=<UTC date>`). ADS-B Exchange replays proved more reliable for older
+(`?icao=<hex>&showTrace=<UTC date>&timestamp=<alert time>`: that day's whole track with the aircraft
+placed at the alert; a live link opened later shows whatever the aircraft flies then). ADS-B Exchange replays proved more reliable for older
 days than airplanes.live, which showed "No data". Tapping an ntfy notification opens live ADSBx.
+Telegram gets the post's wording as HTML (`Notifier.telegram_text`), without `--telegram-skip` kinds
+(LOST_CONTACT, CONTACT_RESTORED, POSITION_JUMP: 355 of 429 alerts in the run of 10-11 Oct 2026) unless
+the message's `[also: ...]` names another kind; 83 of the 429 would have been sent.
 
 ## Testing
 
