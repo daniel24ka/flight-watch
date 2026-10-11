@@ -5,6 +5,7 @@ Run with:  python -m unittest discover -s tests
 import json
 import os
 import sys
+import tempfile
 import unittest
 from unittest import mock
 from datetime import datetime
@@ -1377,9 +1378,9 @@ class AnnouncerTests(unittest.TestCase):
         t = fw.Track("8965d1", callsign="FDB1073",
                      sched=fw.SchedFlight("FZ1073", "ARR", "DXB", "DUBAI", "2026-09-30 09:24", "FINAL"))
         links = fw.external_links(t, 1790000000, fw.VIEWER_URL)
-        self.assertEqual(links["map"], fw.VIEWER_URL + "?hex=8965d1&f=FZ1073&d=A")
+        self.assertEqual(links["map"], fw.VIEWER_URL + "?hex=8965d1&f=FZ1073&d=A&t=1790000000")
         self.assertEqual(fw.external_links(fw.Track("738bed"), 1790000000, fw.VIEWER_URL)["map"],
-                         fw.VIEWER_URL + "?hex=738bed")              # not on the board: the aircraft alone
+                         fw.VIEWER_URL + "?hex=738bed&t=1790000000")  # not on the board: the aircraft alone
         self.assertNotIn("map", fw.external_links(t, 1790000000, ""))  # --viewer-url ''
         ann, _ = self.make()
         rec = alert_rec("TOWARD_ISRAEL", "not bound for Israel " + "x" * 400)
@@ -1417,7 +1418,8 @@ class AnnouncerTests(unittest.TestCase):
 
             def post(self, url, **kw):
                 self.calls.append(kw["json"])
-        args = fw.parse_args(["--jsonl", "", "--posts", "", "--turn-zones", ""])
+        saved = os.path.join(tempfile.mkdtemp(), "posts_telegram.jsonl")
+        args = fw.parse_args(["--jsonl", "", "--posts", "", "--turn-zones", "", "--telegram-posts", saved])
         http = Sent()
         with mock.patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "@c"}):
             n = fw.Notifier(args, http, fw.Announcer(args, out=lambda text: None), console=lambda text: None)
@@ -1434,6 +1436,10 @@ class AnnouncerTests(unittest.TestCase):
         self.assertEqual(http.calls[0]["parse_mode"], "HTML")
         self.assertIn("Lost contact: FZ1073 (A6-FKF, B38M) A &lt;-&gt; B - FL150", text)
         self.assertIn('<a href="https://globe.adsbexchange.com/?icao=8965d1&amp;showTrace=2026-09-30">Replay</a>', text)
+        with open(saved, encoding="utf-8") as f:
+            lines = [json.loads(line) for line in f]
+        self.assertEqual([(p["kind"], p["sent"]) for p in lines], [("LOST_CONTACT", True), ("EMERGENCY", True)])
+        self.assertIn("Lost contact: FZ1073 (A6-FKF, B38M) A <-> B - FL150", lines[0]["text"])
 
     def test_long_details_are_cut_to_the_limit(self):
         ann, _ = self.make()

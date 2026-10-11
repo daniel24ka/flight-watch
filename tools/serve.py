@@ -6,6 +6,7 @@ read it in the browser. Served from here the pages ask this server instead (same
 
   /v2/...           -> https://api.adsb.lol/v2/...        (callsign / hex lookups)
   /data/traces/...  -> https://adsb.lol/data/traces/...   (today's positions of one aircraft)
+  /globe_history/.. -> https://adsb.lol/globe_history/... (its positions on a past day)
   anything else     -> the files in docs/ (flights.html, flight_map.html, ...)
 
 Requests go through flight_watch.Http: the same adaptive per-host budget and 429 backoff as
@@ -32,7 +33,8 @@ import flight_watch as fw  # noqa: E402
 
 DOCS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs")
 UPSTREAM = {"/v2/": ("https://api.adsb.lol", 5),          # prefix -> (host, cache seconds)
-            "/data/traces/": ("https://adsb.lol", 30)}
+            "/data/traces/": ("https://adsb.lol", 30),
+            "/globe_history/": ("https://adsb.lol", 3600)}   # one aircraft on a past day
 
 
 class Relay:

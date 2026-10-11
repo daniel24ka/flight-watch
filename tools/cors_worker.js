@@ -6,6 +6,7 @@
  *   /v2/hex/<hex>[,<hex>...]          -> https://api.adsb.lol/v2/...    (fresh 5 s)
  *   /v2/callsign/<cs>[,<cs>...]       -> https://api.adsb.lol/v2/...    (fresh 5 s)
  *   /data/traces/<xx>/trace_{full,recent}_<hex>.json -> https://adsb.lol/data/traces/... (30 s)
+ *   /globe_history/<yyyy>/<mm>/<dd>/traces/<xx>/trace_full_<hex>.json -> https://adsb.lol/... (1 h; a past day)
  *   /hexof/<cs>[,<cs>...]             -> which aircraft (hex) flew each callsign in the last 36 h
  *
  * Nothing else is relayed (not an open proxy), only GET, only for the origins below. Answers are
@@ -35,11 +36,12 @@ const ORIGINS = [/^https:\/\/yuval-harpaz\.github\.io$/, /^http:\/\/(localhost|1
 const ROUTES = [  // [path pattern, upstream host, fresh seconds]
   [/^\/v2\/(hex|callsign)\/[0-9A-Za-z~,]{1,1000}$/, "https://api.adsb.lol", 5],
   [/^\/data\/traces\/[0-9a-f]{2}\/trace_(full|recent)_~?[0-9a-f]{6}\.json$/, "https://adsb.lol", 30],
+  [/^\/globe_history\/\d{4}\/\d\d\/\d\d\/traces\/[0-9a-f]{2}\/trace_full_~?[0-9a-f]{6}\.json$/, "https://adsb.lol", 3600],
 ];
 const STALE_S = 120;              // serve an answer this old when upstream fails
 const HOME = [32.0114, 34.8867];  // TLV
 const KEEP_S = 36 * 3600;         // callsign map: forget entries older than this
-const VERSION = "0.4";            // shown at / and /status, to check which code is deployed
+const VERSION = "0.5";            // shown at / and /status, to check which code is deployed
 const UA = {"User-Agent": "flight-watch-pages-relay/" + VERSION};
 
 function cors(origin) {

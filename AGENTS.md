@@ -54,6 +54,18 @@ ADS-B carries no origin/destination. Arrival/departure comes from the flight boa
 then the callsign's route in the VRS standing data, then a heuristic near the airport
 (`ARR?` / `DEP?`).
 
+**The flight of an alert** (`flight_map.html?hex=..&t=<unix time>`, `alertView`): the owner wants links that
+show the same flight whenever they are opened, live while it flies and a replay afterwards (11 Oct 2026). The page
+reads the aircraft's trace (`/data/traces` reaches back about a day; older: adsb.lol's free
+`/globe_history/YYYY/MM/DD/traces/<xx>/trace_full_<hex>.json`, relayed by the worker from 0.5 and by `serve.py`),
+takes the leg around `t` (`FB.flightAt`) and shows it live (heard in the last 15 min, nothing after it) or as a
+drawn track with the alert's point; "our map / ADS-B Exchange / both" puts ADS-B Exchange's map in an iframe
+(it and adsb.lol send no X-Frame-Options; airplanes.live, adsb.fi and FR24 refuse), live or `FB.replayURL`:
+`showTrace` + `timestamp`, with `startTime` / `endTime` only at ends known to be real (ground, or < 200 kt),
+because adsb.lol's coverage is thinner than ADS-B Exchange's (ET-AWJ, 10 Oct 2026: 15 KB against 104 KB for the
+day; adsb.lol heard 2 min of the Amman departure, then nothing for 7 h, and `FB.legs` joins that gap). Without
+a trace: live for 20 min after the alert, then the replay. A replay shows one UTC day.
+
 **Flight pages** (`docs/flights.html`, `docs/flight_map.html`, shared `docs/flightboard.js`;
 local helper `tools/serve.py`): the board table and a live map of one flight, processed in the
 browser. The owner wants the browser (JS) and the monitor (Python) to process alike: the JS
@@ -278,8 +290,8 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
 
 ## Links in alerts (no local storage)
 
-`map` (our `docs/flight_map.html?hex=<hex>&f=<flight>&d=<A|D>` on GitHub Pages, `--viewer-url`; first
-link in posts), `fr24_flight` (`/data/flights/fz1073`, flight number from the board or callsign → IATA),
+`map` (our `docs/flight_map.html?hex=<hex>&f=<flight>&d=<A|D>&t=<alert time>` on GitHub Pages, `--viewer-url`; first
+link in posts; with `t` the page shows the flight of the alert whenever it is opened, see Flight pages), `fr24_flight` (`/data/flights/fz1073`, flight number from the board or callsign → IATA),
 `fr24_aircraft` (by registration), `live_adsbx` / `live`, `replay_adsbx` / `replay`
 (`?icao=<hex>&showTrace=<UTC date>&timestamp=<alert time>`: that day's whole track with the aircraft
 placed at the alert; a live link opened later shows whatever the aircraft flies then). ADS-B Exchange replays proved more reliable for older
@@ -287,6 +299,7 @@ days than airplanes.live, which showed "No data". Tapping an ntfy notification o
 Telegram gets the post's wording as HTML (`Notifier.telegram_text`), without `--telegram-skip` kinds
 (LOST_CONTACT, CONTACT_RESTORED, POSITION_JUMP: 355 of 429 alerts in the run of 10-11 Oct 2026) unless
 the message's `[also: ...]` names another kind; 83 of the 429 would have been sent.
+Each message is also appended to `--telegram-posts` (`posts_telegram.jsonl`, with `sent`), apart from `posts.jsonl`.
 
 ## Testing
 
@@ -379,8 +392,8 @@ and fetching a cold start's ~60 files in one cycle held up the local poll for ov
   run): a run answered 429 changes no callsigns. Without a relay the map skips
   pointless lookups (`FB.liveUseful`: landed, cancelled, far from its time) and turns a refused
   feed (`FB.blocked`, a fetch TypeError) into a quiet note with ADSBx / FR24 links. Past boards come from the
-  over.org.il archive (nothing stored here); a past map would need ADS-B Exchange history, which
-  is not free to read from a page - use the `replay_adsbx` links instead.
+  over.org.il archive (nothing stored here); past tracks from adsb.lol's `/globe_history` files (see "The
+  flight of an alert"; ADS-B Exchange's fuller history is not free to read from a page - its replay is embedded).
 
 ## Out of scope unless asked
 

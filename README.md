@@ -119,14 +119,17 @@ the announcement feed; `-vv` adds debug detail. Alerts are appended to `alerts.j
 (`--jsonl ''` / `--posts ''` to disable). Telegram: set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`
 (a channel where the bot is an admin: `@name` or its `-100...` id; only admins can write there). `--telegram-skip`
 (`TELEGRAM_SKIP`; default `LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP`) leaves those kinds out of Telegram
-unless the flight also has an alert of another kind.
+unless the flight also has an alert of another kind. Each message sent is also appended to
+`posts_telegram.jsonl` (`--telegram-posts`; `monitor.sh`: `posts_telegram_YYYY-MM-DD.jsonl`), `"sent": false` when Telegram refused it.
 
 ## Storage and links
 
 No flight tracks are stored. Each alert is one line in `alerts.jsonl` with links to existing sites:
 
-- `map` - our flight map page (`docs/flight_map.html?hex=...`, on GitHub Pages; `--viewer-url`,
-  `''` leaves it out): the aircraft, plus its board data when it is a TLV flight.
+- `map` - our flight map page (`docs/flight_map.html?hex=...&t=<alert time>`, on GitHub Pages; `--viewer-url`,
+  `''` leaves it out): the flight of the alert whenever the link is opened - live while it flies, its track
+  afterwards - on our map, on ADS-B Exchange's (embedded: live, or its replay cut to that flight), or both
+  side by side; plus its board data when it is a TLV flight.
 - `fr24_flight` - Flightradar24 history for the flight number (e.g. `/data/flights/fz1073`); pick the
   date to open its playback. Free FR24 accounts only see recent history.
 - `fr24_aircraft` - Flightradar24 history for the registration (works when callsign != flight number).

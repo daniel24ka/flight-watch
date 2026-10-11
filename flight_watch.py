@@ -305,6 +305,7 @@ def external_links(t: "Track", when: float, viewer: str = "") -> dict:
         q = {"hex": t.hex}
         if t.sched:  # the page then shows the board's data too
             q.update(f=t.sched.flight, d=t.sched.direction[0])
+        q["t"] = int(when)  # the page shows the flight of this moment: live, or its replay once it ended
         links["map"] = viewer + "?" + urlencode(q)
     flight = t.sched.flight if t.sched else iata_flight(t.callsign)
     if flight:
@@ -1055,9 +1056,16 @@ class Notifier:
                                 "Priority": str(rec["priority"]), "Tags": "airplane",
                                 "Click": main, "Actions": actions})
         if self.tg_token and self.tg_chat and self.telegram_wanted(rec):
-            self._post(f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
-                       json={"chat_id": self.tg_chat, "text": self.telegram_text(rec),
-                             "parse_mode": "HTML", "disable_web_page_preview": True})
+            segments = self.announcer.compose(rec, reply=False)
+            sent = self._post(f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
+                              json={"chat_id": self.tg_chat, "text": self.telegram_text(segments),
+                                    "parse_mode": "HTML", "disable_web_page_preview": True})
+            if self.args.telegram_posts:  # exactly what went to Telegram, one line per message
+                post = {"time": rec["time"], "kind": rec["kind"], "priority": rec["priority"],
+                        "hex": rec["hex"], "sent": sent, "segments": segments,
+                        "text": "".join(s.get("text") or s["link"] for s in segments)}
+                with open(self.args.telegram_posts, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(post, ensure_ascii=False) + "\n")
 
     def telegram_wanted(self, rec: dict) -> bool:
         """--telegram-skip kinds are left out, unless the flight also did something not skipped
@@ -1067,11 +1075,11 @@ class Notifier:
         also = re.search(r"\[also: ([^\]]+)\]", rec["message"])
         return bool(also and {k.strip() for k in also.group(1).split(",")} - self.tg_skip)
 
-    def telegram_text(self, rec: dict) -> str:
+    @staticmethod
+    def telegram_text(segments: list) -> str:
         """The announcement's wording (a top-level post) as Telegram HTML, links as labels."""
         return "".join(f'<a href="{html.escape(s["url"])}">{html.escape(s["link"])}</a>' if "link" in s
-                       else html.escape(s["text"], quote=False)
-                       for s in self.announcer.compose(rec, reply=False))
+                       else html.escape(s["text"], quote=False) for s in segments)
 
     @staticmethod
     def row(rec: dict) -> str:
@@ -1084,11 +1092,13 @@ class Notifier:
         spoof = "".join(f"  [{rec[k]}]" for k in ("spoof", "gps") if rec.get(k))
         return f"{when:%H:%M:%S}  {ident}{route}  {rec['kind']}{spoof}"
 
-    def _post(self, url, **kw):
+    def _post(self, url, **kw) -> bool:
         try:
             self.http.post(url, **kw)
+            return True
         except requests.RequestException as e:
             log.error("notification failed (%s): %s", url.split("/")[2], e)
+            return False
 
 
 # --------------------------------------------------------------------------- monitor
@@ -2526,6 +2536,8 @@ def parse_args(argv=None):
     g.add_argument("--telegram-skip", default=os.getenv("TELEGRAM_SKIP", "LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP"),
                    help="alert kinds not sent to Telegram (still in the files and ntfy), unless the "
                         "flight also has an alert of another kind ('' sends everything)")
+    g.add_argument("--telegram-posts", default="posts_telegram.jsonl",
+                   help="append each message sent to Telegram here ('' to disable)")
     g.add_argument("--ntfy-topic", default=os.getenv("NTFY_TOPIC"), help="ntfy topic name")
     g.add_argument("--ntfy-server", default=os.getenv("NTFY_SERVER", "https://ntfy.sh"))
     g.add_argument("--log-file", help="also write the full log (as with -v) to this file")

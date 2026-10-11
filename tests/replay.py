@@ -125,7 +125,7 @@ def run(fixture: dict, argv=(), warmup: float = 300) -> tuple[list[dict], fw.Mon
     """Replay the fixture window; returns (alerts, monitor, feed)."""
     meta = fixture["meta"]
     args = fw.parse_args(["--airport", meta["airport"], "--radius", str(meta["radius"]),
-                          "--jsonl", "", "--posts", "", "--rate", "60", "--rate-max", "600",
+                          "--jsonl", "", "--posts", "", "--telegram-posts", "", "--rate", "60", "--rate-max", "600",
                           *argv])
     clock = Clock(meta["start"] - warmup)
     http = fw.Http(min_gap=0, rate=args.rate, rate_max=args.rate_max, clock=clock, rng=lambda: 0.5)

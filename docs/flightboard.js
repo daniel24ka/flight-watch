@@ -195,7 +195,7 @@ FB.situation = function (f, now) {
 FB.local = function () {
   return typeof location !== "undefined" && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
 };
-// FB.RELAY: an HTTPS address of tools/serve.py (or any relay of /v2/* and /data/traces/* that
+// FB.RELAY: an HTTPS address of tools/serve.py (or any relay of /v2/*, /data/traces/* and /globe_history/* that
 // adds CORS headers), for the pages on GitHub Pages; "" = none, so live data works only locally.
 FB.RELAY = "https://flight-watch-relay.yuvharpaz.workers.dev";  // tools/cors_worker.js
 FB.feedBase = function () {
@@ -239,11 +239,43 @@ FB.trace = async function (hex) {
   for (const kind of ["full", "recent"]) {
     try {
       const d = await FB.getJSON(FB.traceBase() + "/data/traces/" + xx + "/trace_" + kind + "_" + hex + ".json");
-      for (const p of d.trace || []) out.push({t: d.timestamp + p[0], lat: p[1], lon: p[2], alt: p[3]});
+      for (const p of d.trace || []) out.push({t: d.timestamp + p[0], lat: p[1], lon: p[2], alt: p[3], gs: p[4]});
     } catch (e) { /* not available: the trail is built from the live positions instead */ }
   }
   out.sort((a, b) => a.t - b.t);
   return out.filter((p, i) => !i || p.t > out[i - 1].t);
+};
+/** One past UTC day ("YYYY-MM-DD") of an aircraft, from adsb.lol's history files (the trace above
+ *  reaches back only about a day). Throws when it cannot be read. */
+FB.traceDay = async function (hex, day) {
+  const d = await FB.getJSON(FB.traceBase() + "/globe_history/" + day.replace(/-/g, "/") + "/traces/" + hex.slice(-2) +
+                             "/trace_full_" + hex + ".json");
+  return (d.trace || []).map(p => ({t: d.timestamp + p[0], lat: p[1], lon: p[2], alt: p[3], gs: p[4]}));
+};
+/** The flight an alert at time `t` belongs to: the leg around t (at most 30 min away from it), or null.
+ *  tookOff / landed: that end of the leg is a real one (on the ground next to it, or under 200 kt, i.e.
+ *  near a runway) and not just where coverage starts or stops. live: nothing came after it and it was
+ *  heard in the last 15 min. */
+FB.flightAt = function (pts, t, now) {
+  pts = pts.filter(p => p.lat != null);
+  const off = l => t < l[0].t ? l[0].t - t : t > l[l.length - 1].t ? t - l[l.length - 1].t : 0;
+  const leg = FB.legs(pts).sort((a, b) => off(a) - off(b))[0];
+  if (!leg || off(leg) > 1800) return null;
+  const first = leg[0], last = leg[leg.length - 1], i = pts.indexOf(first), j = pts.indexOf(last);
+  const slow = p => p.gs != null && p.gs < 200;
+  return {leg, start: first.t, end: last.t,
+          tookOff: (i > 0 && pts[i - 1].alt === "ground") || slow(first),
+          landed: (j < pts.length - 1 && pts[j + 1].alt === "ground") || slow(last),
+          live: j === pts.length - 1 && now - last.t < 900};
+};
+/** ADS-B Exchange replay of the alert's flight: its UTC day with the aircraft placed at the alert
+ *  (timestamp), cut to the flight (5 min around it) at the ends that are known to be real and on that day. */
+FB.replayURL = function (hex, t, flight) {
+  const iso = x => new Date(x * 1000).toISOString(), day = iso(t).slice(0, 10);
+  const at = (name, x) => iso(x).slice(0, 10) === day ? "&" + name + "=" + iso(x).slice(11, 19) : "";
+  return "https://globe.adsbexchange.com/?icao=" + hex + "&showTrace=" + day +
+    (flight && flight.tookOff ? at("startTime", flight.start - 300) : "") +
+    (flight && flight.landed && !flight.live ? at("endTime", flight.end + 300) : "") + "&timestamp=" + Math.round(t);
 };
 /** The points of the current leg: after the last time on the ground, or after a gap the aircraft
  *  could not have spent flying (> 10 min at under 200 kt on average): a stop where coverage is

@@ -102,6 +102,27 @@ class BoardLogicMatchesPython(unittest.TestCase):
         ground = [dict(out_leg[0], alt="ground")]
         self.assertEqual(node("FB.currentLeg(DATA).length", ground + out_leg), 5)
 
+    def test_flight_of_an_alert_live_or_ended(self):
+        t = 1791417600 + 10 * 3600  # 2026-10-08 10:00:00 UTC
+        def p(i, lat, lon, alt, gs):
+            return {"t": t + i * 60, "lat": lat, "lon": lon, "alt": alt, "gs": gs}
+        first = ([p(0, 32.0, 34.88, "ground", 10)] +
+                 [p(1 + i, 32.0 + i * 0.2, 34.85 - i * 0.2, 3000 + 3000 * i, 160 + 60 * i) for i in range(6)])
+        second = [p(300 + i, 33.0 - i * 0.2, 33.85 + i * 0.2, 30000, 430) for i in range(6)]  # 5 h later, at cruise
+        pts, alert = first + second, t + 4 * 60
+        now = t + 306 * 60
+        ended = node(f"(f => [f.start, f.end, f.tookOff, f.landed, f.live])(FB.flightAt(DATA, {alert}, {now}))", pts)
+        self.assertEqual(ended, [t + 60, t + 6 * 60, True, False, False])       # coverage ended at speed: no landing
+        live = node(f"(f => [f.start, f.tookOff, f.landed, f.live])(FB.flightAt(DATA, {t + 303 * 60}, {now}))", pts)
+        self.assertEqual(live, [t + 300 * 60, False, False, True])
+        self.assertFalse(node(f"FB.flightAt(DATA, {t + 303 * 60}, {now + 3600}).live", pts))  # silent for an hour
+        self.assertIsNone(node(f"FB.flightAt(DATA, {t + 100 * 60}, {now})", pts))            # between the two
+        url = node(f"FB.replayURL('8965d1', {alert}, FB.flightAt(DATA, {alert}, {now}))", pts)
+        self.assertEqual(url, "https://globe.adsbexchange.com/?icao=8965d1&showTrace=2026-10-08"
+                              f"&startTime=09:56:00&timestamp={alert}")
+        self.assertEqual(node(f"FB.replayURL('8965d1', {alert}, null)"),
+                         f"https://globe.adsbexchange.com/?icao=8965d1&showTrace=2026-10-08&timestamp={alert}")
+
     def test_leg_of_a_landed_flight(self):
         t = 1791400000
         def p(i, lat, lon, alt):
@@ -243,6 +264,8 @@ class CorsWorker(unittest.TestCase):
             for (const [path, origin, method] of [
                 ["/v2/hex/738071,8965d1", P], ["/v2/callsign/WZZ4603", "http://localhost:8765"],
                 ["/data/traces/71/trace_recent_738071.json", P], ["/v2/hex/738071", P, "OPTIONS"],
+                ["/globe_history/2026/10/10/traces/6d/trace_full_04016d.json", P],   // a past day
+                ["/globe_history/2026/10/10/acas/acas.csv.gz", P],                   // not relayed
                 ["/v2/hex/738071", "https://evil.example"],   // another site: refused
                 ["/v2/point/32/34/250", P],                   // not a path the pages use: not relayed
                 ["/https://example.com/", P], ["/v2/hex/738071", P, "POST"],
@@ -251,10 +274,11 @@ class CorsWorker(unittest.TestCase):
               out.push((await req(path, origin, method)).slice(0, 2));
             return {out, calls};""")
         self.assertEqual(got["out"], [[200, pages], [200, "http://localhost:8765"], [200, pages], [204, pages],
-                                      [403, None], [404, pages], [404, pages], [405, pages], [429, pages], [200, None]])
+                                      [200, pages], [404, pages], [403, None], [404, pages], [404, pages], [405, pages], [429, pages], [200, None]])
         self.assertEqual(got["calls"], ["https://api.adsb.lol/v2/hex/738071,8965d1",
                                         "https://api.adsb.lol/v2/callsign/WZZ4603",
                                         "https://adsb.lol/data/traces/71/trace_recent_738071.json",
+                                        "https://adsb.lol/globe_history/2026/10/10/traces/6d/trace_full_04016d.json",
                                         "https://api.adsb.lol/v2/callsign/X429"])
 
     def test_cached_answer_and_a_recent_one_when_adsb_lol_says_429(self):
@@ -409,6 +433,8 @@ class LocalHelper(unittest.TestCase):
         self.assertEqual(len(self.up.calls), 1)
         self.get("/data/traces/71/trace_recent_738071.json")
         self.assertEqual(self.up.calls[-1], "https://adsb.lol/data/traces/71/trace_recent_738071.json")
+        self.get("/globe_history/2026/10/10/traces/6d/trace_full_04016d.json")
+        self.assertEqual(self.up.calls[-1], "https://adsb.lol/globe_history/2026/10/10/traces/6d/trace_full_04016d.json")
 
     def test_429_cools_down_instead_of_hammering(self):
         self.up.status = 429
