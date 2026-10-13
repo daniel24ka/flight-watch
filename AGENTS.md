@@ -157,6 +157,22 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   learned route direction reset. Before this, an arrival parked overnight and given its morning
   departure's callsign (LOT7MA -> LOT4CG) was RETURNED: 70 false alarms in one night (6 Oct 2026),
   and an aircraft on the ground repeated DIVERSION / RETURNED after every cooldown.
+  A landing elsewhere must be believable (13 Oct 2026; all 4 DIVERSIONs of the run of 11-12 Oct were
+  arrivals on approach to TLV with spoofed GPS - ETD3QF, AIZ282, ISR972, ELY5462): "on the ground" within
+  `LANDING_AIRPORT_NM` (5) of an airport of the local `standing-data/` checkout (`StandingData.airfield_near`;
+  the three fake places were 16-41 nm from any; without the checkout: not during a spoofing / GPS episode), and
+  ground reports are dropped when faster than `GROUND_MAX_KT` (250; AIZ282 "on the ground" at 575 kt) or out of
+  reach of the last trusted position (`unreal_ground`: the air / ground switch is right while the GPS is not,
+  and `spoofed()` / `integrity()` never judged ground reports). The list lacks some military fields (nothing
+  near Azraq): a real landing at one is only logged ("not taken as a landing").
+- **Callsign changes** (`Monitor.new_callsign`, 13 Oct 2026; 9 false alerts in the run of 11-12 Oct): a changed
+  callsign is taken up after `CALLSIGN_HOLD` (120 s) and refused while another tracked aircraft sends it -
+  adsb.lol gave 4X-ABG the callsign ISR723 for 55 s (4X-ABF's; ADS-B Exchange's trace never had it) and ISR050
+  for 100 s, turning an Eilat arrival into a "departure turning back" and a departure into an arrival flying
+  away. A change starts a new leg: `sched` (it used to stay when the new callsign was not on the board:
+  TVF3452 left TLV as TVF55BJ still an "arrival"), `route_dir` (QTR79Q -> QTR52X, MEA305 -> MEA312 at Beirut),
+  `was_airborne` / `max_dist` (ELY5120 landed unseen, ELY5101 on the ground 2 h later: RETURNED) are reset
+  and OFF_COURSE / TURNING_BACK use only the track flown since (`leg_start`).
 - **VERTICAL_RATE**: judged as a **flight-path angle** (rate vs ground speed), because a
   rate threshold flagged every normal jet climb-out (+4000-4800 ft/min at 8000 ft) and
   speed-brake descent. Limits: descent 10 deg everywhere (normal max seen ~8, glide slope 3),
@@ -174,6 +190,12 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   normal climbs read as 40-60 deg and also "confirmed" glitched rates: 10 alerts, 0 now. Climb and descent have separate cooldowns, and a reading ≥1.5× the
   last alerted severity bypasses the cooldown. Without this, a small wobble suppressed the
   real 14,000 ft dive in the FZ1073 test.
+  An MLAT report's speed is the receivers' estimate: the military GLF5 "684", 12 Oct 2026, descending
+  5,115 ft/min at ~455 kt (6.4 deg) was given 257 kt on one poll and alerted at 11.1 deg. For MLAT reports
+  `trusted_gs` takes the last speed the aircraft itself reported (<= 5 min), else the speed between its
+  positions over 1-3 min, and the alert says so. One set of limits for all (the owner: the simpler the
+  better); alerts on military and on light / private aircraft carry a note that steep profiles are common
+  there (4 of the 15 VERTICAL_RATE alerts on disk: GLF5 x2, C295, P750).
 - **EMERGENCY**: alerts on squawk *transition* into 7500/7600/7700, not every cooldown.
 - **COURSE_CHANGE**: a large reversal (>= 70 deg in 2 min) above `--turn-min-alt`. Not
   reported within ~35 nm of a regional airport below FL250 (all 10 replay false alarms were
@@ -221,6 +243,14 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   not recognised as such (Wizz-style callsigns, private jets): they fly straight in, so the
   turn requirement keeps them quiet; route data now recognises most of them. Jordan is ~40 nm from the border, so a looser rule (30 min,
   30 deg) flagged 12 routine Amman/Damascus movements in the replay.
+  Amman's own traffic over Israel is exempt (`amman_traffic`, 13 Oct 2026: Royal Jordanian crosses at
+  31.8-32.1 N daily, 5 alerts in each of two runs): inbound from the west pointing at Amman, on approach from
+  the east (<= 60 nm, low or descending), or climbing out in the 20 min after being on the ground there /
+  first heard low and climbing. Kept on the owner's wish: a flight from the east flying on past Amman, and
+  anything else about to cross. The surroundings of Eilat (`EILAT_ALLOW_NM`, 50 km = 27 nm) are not counted
+  (`over_israel`): the airways over Taba / Aqaba pass a few km south and a straight line from them clipped the
+  tip (5 alerts, none entered). 25 km at first; widened because NMA445 from Jordan toward Sinai pointed 14-27 nm
+  north of Eilat. The owner may drop this alert kind altogether.
 - **Hot flights**: any alert makes a flight followed, and any anomaly except a lone LOST_CONTACT makes it hot
   (silence alone is mostly a coverage gap and asking for a silent aircraft every cycle finds nothing; it is hot
   when another anomaly came within `--hot-minutes`; 11 Oct 2026. Refusals do not come from this: in the run of
@@ -274,7 +304,9 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   its position: GPS jammed, then it flies on inertial and positions stay roughly right, or a spoof
   it noticed - AEE925: NIC 0 / NACp 0 / SIL 0 on every fake position, 8 again a minute after).
   A NIC-0 report is used only if reachable from the last trusted position (3 nm + 650 kt), else
-  dropped without a jump alert. Healthy NIC proves nothing: on 6 Oct 61% of the reports frozen
+  dropped without a jump alert. The reach grows with time, so a report that continues the dropped ones
+  (reachable from the last of them, `Track.nic_bad`) is dropped too: ISR972's fake place 73 nm away came
+  within reach after 3 min and its silence there was a DIVERSION (12 Oct 2026). Healthy NIC proves nothing: on 6 Oct 61% of the reports frozen
   at the Amman point said NIC 8 (only 34% NIC 0), and 5.5% of ordinary reports were NIC 0. Drops
   to NIC 0 by 3+ aircraft within 2 min and 100 nm = one alert labelled `gps-YYYYMMDDTHHMMZ`
   (labels get -2, -3 when episodes start the same minute) and one when it ends (15 min without

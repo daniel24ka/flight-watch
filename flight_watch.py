@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import glob
 import html
 import io
 import json
@@ -173,6 +174,17 @@ LARGE_TYPES = re.compile(r"A[0-9]{3}|A[23][0-9]N|B7[0-9]{2}|B[37][0-9]M|BCS[13]|
 # Israeli airlines (ICAO): El Al, Israir, Arkia, CAL Cargo, Sun d'Or, Challenge Airlines IL, Air Haifa
 ISRAELI_AIRLINES = {"ELY", "ISR", "AIZ", "ICL", "ERO", "CHG", "HFA"}
 ISRAELI_CODES = {c for c, v in REGION_AIRPORTS.items() if v[2]} | {"LLBG", "LLHA", "LLER", "LLOV"}
+# A changed callsign is taken up after it has been sent this long (s): adsb.lol gave 4X-ABG the
+# callsign of its sister 4X-ABF for 55 s and of another for 100 s (12 Oct 2026, see new_callsign)
+CALLSIGN_HOLD = 120
+# no aircraft rolls on the ground faster (kt): AIZ282 "on the ground" at 575 kt, 11 Oct 2026
+GROUND_MAX_KT = 250
+# a landing elsewhere is at an airport: at most this far (nm) from one of the standing data
+LANDING_AIRPORT_NM = 5
+# TOWARD_ISRAEL does not count the southern tip: airways pass Taba / Aqaba a few km from Eilat and
+# a straight line from them clips it (5 alerts on 11-12 Oct 2026, none entered). 50 km, the owner's choice
+# (25 km first: NMA445, Jordan -> Sinai, pointed 14-27 nm north of Eilat and still alerted).
+EILAT, EILAT_ALLOW_NM = (29.5577, 34.9519), 27
 ISRAEL = [(33.09, 35.10), (33.28, 35.58), (33.33, 35.82), (32.70, 35.87), (32.30, 35.57), (31.50, 35.48),
           (30.90, 35.40), (29.55, 34.98), (29.50, 34.90), (30.88, 34.40), (31.22, 34.25), (31.60, 34.48),
           (32.10, 34.77), (32.83, 34.95)]
@@ -216,18 +228,25 @@ def in_polygon(lat, lon, poly) -> bool:
     return inside
 
 
-def minutes_to(poly, lat, lon, track, gs, horizon_min) -> float | None:
-    """Minutes until the current track enters `poly` (0 = inside), None if not within the horizon."""
-    if in_polygon(lat, lon, poly):
+def minutes_to(poly, lat, lon, track, gs, horizon_min, inside=None) -> float | None:
+    """Minutes until the current track enters `poly` (0 = inside), None if not within the horizon.
+    `inside(lat, lon)` replaces the plain polygon test."""
+    inside = inside or (lambda la, lo: in_polygon(la, lo, poly))
+    if inside(lat, lon):
         return 0.0
     if not gs or track is None:
         return None
     steps = max(1, int(horizon_min * 2))  # check every 30 s of flight
     for k in range(1, steps + 1):
         m = horizon_min * k / steps
-        if in_polygon(*destination(lat, lon, track, gs * m / 60), poly):
+        if inside(*destination(lat, lon, track, gs * m / 60)):
             return m
     return None
+
+
+def over_israel(lat, lon) -> bool:
+    """Inside the rough outline, the surroundings of Eilat left out (see EILAT)."""
+    return in_polygon(lat, lon, ISRAEL) and haversine_nm(lat, lon, *EILAT) > EILAT_ALLOW_NM
 
 
 def nearest_airport(lat, lon, israeli: bool | None = None, exclude=()) -> tuple[str | None, float]:
@@ -436,6 +455,7 @@ class StandingData:
                  ttl: float = 24 * 3600, clock=time.monotonic):
         self.http, self.source, self.ttl, self.clock = http, source.rstrip("/"), ttl, clock
         self.files: dict[str, tuple[float, dict]] = {}
+        self.fields: list | None = None  # every airport (lat, lon, ICAO), see airfield_near
         self.preload = preload
         self.remote = self.source.startswith(("http://", "https://"))  # else a local checkout
         if http and self.source.startswith(("http://", "https://")):
@@ -532,6 +552,30 @@ class StandingData:
         row = hit[1].get(icao) if hit else None
         return (row[3], row[4]) if row and len(row) > 4 else None
 
+    def airfield_near(self, lat: float, lon: float) -> tuple[str, float] | None:
+        """(ICAO, nm) of the nearest airport, from a local checkout only (all its airport files are
+        read once, ~35,000 rows); None when the list is not at hand (a URL source, tests, replays)."""
+        if self.preload is not None or self.remote:
+            return None
+        if self.fields is None:
+            self.fields = []
+            for name in glob.glob(os.path.join(self.source, "airports", "schema-01", "*", "*.csv")):
+                try:
+                    with open(name, encoding="utf-8-sig") as f:
+                        for row in csv.reader(f):
+                            try:
+                                self.fields.append((float(row[6]), float(row[7]), row[2] or row[0]))
+                            except (ValueError, IndexError):
+                                continue
+                except OSError:
+                    continue
+        if not self.fields:
+            return None
+        near = [(haversine_nm(lat, lon, la, lo), code) for la, lo, code in self.fields
+                if abs(la - lat) < 1 and abs(lo - lon) < 2]
+        d, code = min(near, default=(1e9, ""))
+        return code, d
+
     def airport(self, icao: str) -> tuple[float, float] | None:
         if self.preload is not None:
             pos = self.preload.get("airports", {}).get(icao)
@@ -618,6 +662,10 @@ class Track:
     skydive: dict | None = None  # its last skydiving lift (see check_skydive)
     skydive_lifts: int = 0   # lifts seen since we first heard it
     trace_end: float = 0.0   # data time of the newest report in its last recent trace (see recent_trace)
+    cs_pending: tuple | None = None  # (callsign, since): a changed callsign not yet taken up (new_callsign)
+    leg_start: float = 0.0   # data time its callsign last changed: course checks use only what came after
+    nic_bad: Sample | None = None  # its last NIC-0 report dropped as out of reach (see integrity)
+    amm_dep: float = 0.0     # data time it was last on the ground at Amman / first heard climbing out of it
 
     @property
     def last(self) -> Sample | None:
@@ -957,7 +1005,7 @@ class Announcer:
 
     def detail(self, rec: dict) -> str:
         """The facts the headline and position don't already say, compactly."""
-        kind, msg = rec["kind"], re.sub(r" \[(also|skydiving pattern|from the feed's recent trace)[^\]]*\]", "", rec["message"])
+        kind, msg = rec["kind"], re.sub(r" \[(also|skydiving pattern|from the feed's recent trace|military aircraft|light / private|MLAT position)[^\]]*\]", "", rec["message"])
         if kind in self.DETAILS:
             m = re.search(self.DETAILS[kind][0], msg)
             out = self.DETAILS[kind][1].format(*m.groups()) if m else msg
@@ -1136,7 +1184,9 @@ class Monitor:
         self.disc_round = -1e9
         self.traces: dict[str, tuple[float, list]] = {}  # hex -> (clock, parsed recent trace)
         self.trace_left = 0       # trace requests still allowed this cycle
+        self.noted: dict[tuple, float] = {}  # (hex, key) -> clock of the last log remark (see note)
         self.from_trace = False   # checks are running on reports read from a trace (alert() says so)
+        self.gs_from = ""         # where trusted_gs took an MLAT report's speed from
 
     # ---- remote queries
     def multi_supported(self, prov: str, kind: str, local: list) -> bool | None:
@@ -1435,7 +1485,7 @@ class Monitor:
         updated: list[tuple[Track, Sample | None, dict]] = []
         for (hexid, msg_t, sample), ac in latest.values():
             t = self.tracks.setdefault(hexid, Track(hexid))
-            t.callsign = (ac.get("flight") or t.callsign).strip()
+            self.new_callsign(t, (ac.get("flight") or "").strip(), msg_t)
             t.reg = ac.get("r") or t.reg
             t.actype = ac.get("t") or t.actype
             t.category = ac.get("category") or t.category
@@ -1451,7 +1501,8 @@ class Monitor:
                 t.geo_offset = geom - baro
             if sample.geo and t.geo_offset is not None:
                 sample.alt = int(sample.alt - t.geo_offset)
-            label = self.spoofed(t, sample) or self.integrity(t, sample)  # a fake / untrustworthy
+            label = (self.spoofed(t, sample) or self.integrity(t, sample)  # a fake / untrustworthy
+                     or self.unreal_ground(t, sample))
             if not label and (prev is None or sample.t > prev.t + 0.5):  # position is kept out of the track
                 t.samples.append(sample)
             updated.append((t, prev, ac, label))
@@ -1486,6 +1537,35 @@ class Monitor:
                       "scheduled": len(self.schedule.flights) if self.schedule else 0,
                       "rate": b.rate}
 
+    def new_callsign(self, t: Track, new: str, now: float) -> None:
+        """Take up the callsign the feed reports. A changed one waits CALLSIGN_HOLD s, and is refused
+        while another aircraft heard now sends it: on 12 Oct 2026 adsb.lol gave 4X-ABG (ISR046, Eilat
+        -> TLV) the callsign ISR723 for 55 s - 4X-ABF's, the Budapest departure, tracked at that
+        moment - and the arrival was a "departure turning back"; earlier ISR050 for 100 s (OFF_COURSE).
+        A change starts a new leg: the board flight, the learned route direction, how far it had been
+        and the course history belong to the old callsign. ELY5120 landed unseen, was ELY5101 on the
+        ground 2 h later and "returned" (147 nm from the arrival); QTR79Q -> QTR52X and MEA305 ->
+        MEA312 at Beirut kept the old leg's direction; TVF3452 left TLV as TVF55BJ still bound to
+        the arrival's board row, "flying away from TLV" (all 12 Oct 2026)."""
+        if not new or new == t.callsign:
+            t.cs_pending = None
+            return
+        if t.callsign:
+            if any(o is not t and o.callsign == new and abs(now - o.last_msg) < CALLSIGN_HOLD
+                   for o in self.tracks.values()):
+                if not t.cs_pending:
+                    log.info("%s reported as %s, which another aircraft is sending - ignored", t.label(), new)
+                t.cs_pending = (new, 1e18)
+                return
+            if not t.cs_pending or t.cs_pending[0] != new or t.cs_pending[1] > now:
+                t.cs_pending = (new, now)
+                return
+            if now - t.cs_pending[1] < CALLSIGN_HOLD:
+                return
+            log.info("%s is now %s: a new leg", t.label(), new)
+            t.sched, t.route_dir, t.was_airborne, t.max_dist, t.leg_start = None, 0, False, 0.0, now
+        t.callsign, t.cs_pending = new, None
+
     def check_track(self, t: Track, prev: Sample | None, ac: dict, spoofed: str, server_now: float) -> None:
         """Every check on a track's newest report (from a poll, or one our polls missed - backfill)."""
         a = self.args
@@ -1518,6 +1598,10 @@ class Monitor:
                 self.alert(t, "CONTACT_RESTORED", f"heard again at {s.alt} ft")
         if (s.on_ground or (s.alt or 0) < 3000) and nearest_airport(s.lat, s.lon, israeli=True)[1] < 8:
             t.israeli = True
+        amm = haversine_nm(s.lat, s.lon, *REGION_AIRPORTS["AMM"][:2])
+        if (s.on_ground and amm < 5) or (len(t.samples) <= 2 and amm < 15 and (s.alt or 0) < 8000
+                                         and (s.vrate or 0) > 300):
+            t.amm_dep = s.t  # (first heard climbing out: the ground at Amman is often not covered)
         self.check_emergency(t, ac)
         self.check_skydive(t)  # before check_vrate, so the dive's alert says what it is
         self.check_vrate(t)
@@ -1659,7 +1743,7 @@ class Monitor:
         try:
             for x, info in self.thin(newer, 2):
                 prev = t.last
-                label = self.spoofed(t, x) or self.integrity(t, x)
+                label = self.spoofed(t, x) or self.integrity(t, x) or self.unreal_ground(t, x)
                 if not label and (prev is None or x.t > prev.t + 0.5):
                     t.samples.append(x)
                 t.last_msg = max(t.last_msg, x.t)
@@ -1729,7 +1813,14 @@ class Monitor:
         extra = f" (history: {computed:+.0f} ft/min)" if computed is not None else ""
         ang = f", {angle:+.1f} deg" if angle is not None else ""
         near = f", {ad:.0f} nm from {apt}" if terminal else ""
-        self.alert(t, "VERTICAL_RATE", f"{direction} {s.vrate:+d} ft/min{ang} at {s.alt} ft{near}{extra}",
+        # the limits are an airliner's: said, not changed, for those that fly steeper as a matter of course
+        large = t.category in LARGE_CATEGORIES or bool(LARGE_TYPES.fullmatch(t.actype or ""))
+        who = (" [military aircraft: steep profiles are routine]" if t.military else
+               " [light / private aircraft: steeper than an airliner is common]"
+               if not airline_like(t) and not large else "")
+        if s.mlat:
+            who += f" [MLAT position: speed {self.gs_from or 'unknown'}, the angle is less certain]"
+        self.alert(t, "VERTICAL_RATE", f"{direction} {s.vrate:+d} ft/min{ang} at {s.alt} ft{near}{extra}{who}",
                    key=f"VERTICAL_RATE:{direction}", severity=abs(s.vrate))
 
     def trusted_gs(self, t: Track) -> float | None:
@@ -1738,19 +1829,34 @@ class Monitor:
         dives on 6 Oct 2026 (B789s at FL380 "at" 117-147 kt, a B738 at FL190 "at" 82 kt), and for
         slow light aircraft an angle limit means little."""
         s = t.last
-        if s.gs is None or s.gs < 120:
+        gs, self.gs_from = s.gs, ""
+        if s.mlat:
+            # An MLAT report's speed is the receivers' estimate, not the aircraft's: the military
+            # GLF5 "684", 12 Oct 2026, descending 5,115 ft/min at 455 kt (6.4 deg) was given 257 kt
+            # on one poll (11.1 deg - alerted). Use the last speed the aircraft itself reported
+            # (<= 5 min), else the speed between its positions over 1-3 min.
+            own = next((y for y in reversed(t.samples) if not y.mlat and y.gs and s.t - y.t <= 300), None)
+            far = next((y for y in t.samples if 60 <= s.t - y.t <= 180), None)
+            if own:
+                gs, self.gs_from = own.gs, "from its last own report"
+            elif far:
+                gs = haversine_nm(far.lat, far.lon, s.lat, s.lon) / ((s.t - far.t) / 3600)
+                self.gs_from = "from its positions"
+            else:
+                return None
+        if gs is None or gs < 120:
             return None
-        if airline_like(t) and (s.alt or 0) >= 10000 and s.gs < 150:
+        if airline_like(t) and (s.alt or 0) >= 10000 and gs < 150:
             return None  # an airliner up there cannot be that slow over the ground
         prev = next((y for y in reversed(t.samples) if 20 <= s.t - y.t <= 120), None)
         if prev is not None:
             moved = haversine_nm(prev.lat, prev.lon, s.lat, s.lon) / ((s.t - prev.t) / 3600)
             # the average lies between the speeds at both ends: 4XDAN (P750) sped up from 55 to
             # 138 kt into a dive, 67 kt on average, and its alert came 30 s late
-            speeds = [s.gs] + ([prev.gs] if prev.gs else [])
+            speeds = [gs] + ([prev.gs] if prev.gs and not prev.mlat else [])
             if not min(speeds) / 1.6 <= moved <= max(speeds) * 1.6:
                 return None  # positions disagree with the reported speed
-        return s.gs
+        return gs
 
     def check_turn(self, t: Track) -> None:
         """Large course change (e.g. a U-turn). Routine turns are skipped: in terminal areas and at
@@ -1948,6 +2054,20 @@ class Monitor:
             return
         if kind == "ARR" and d > 15:
             apt, ad = nearest_airport(s.lat, s.lon)
+            field = self.standing.airfield_near(s.lat, s.lon) if self.standing else None
+            episode = ((t.spoof and s.t - t.spoof_last <= 1800 and t.spoof)
+                       or (t.gps and s.t - t.gps_last <= 1800 and t.gps))
+            # A landing is at an airport. On 11-12 Oct 2026 three arrivals touched down at TLV while
+            # their GPS still gave a fake place ("on the ground" 92, 95 and 108 nm away, 33-63 nm
+            # from any airport). Without the list of airports: not during a GPS episode.
+            if (field[1] > LANDING_AIRPORT_NM) if field else (episode and ad > LANDING_AIRPORT_NM):
+                self.note(t, "ground", f"reported on the ground {d:.0f} nm from {self.args.airport} at "
+                          f"{s.lat:.4f},{s.lon:.4f}, " + (f"{field[1]:.0f} nm from the nearest airport ({field[0]})"
+                                                          if field else f"during {episode}")
+                          + " - not taken as a landing")
+                return
+            if field and ad >= 20:
+                apt, ad = field
             at = f" ({ad:.0f} nm from {apt})" if ad < 20 else ""
             self.alert(t, "DIVERSION", f"{self.args.airport} arrival on the ground "
                        f"{d:.0f} nm away at {s.lat:.4f},{s.lon:.4f}{at}")
@@ -1968,7 +2088,7 @@ class Monitor:
         if s.on_ground or s.track is None or (s.alt or 0) < 5000 or d < a.off_course_min_dist:
             return
         old = t.sample_ago(a.course_hold)
-        if not old:
+        if not old or old.t < t.leg_start:
             return
         window = [x for x in t.samples if x.t >= old.t and x.track is not None]
         if len(window) < 3:
@@ -1997,7 +2117,7 @@ class Monitor:
         if len(ends) < 2:
             return
         old = t.sample_ago(a.course_hold)
-        if not old:
+        if not old or old.t < t.leg_start:
             return
         (o, olat, olon), (dst, dlat, dlon) = ends[0], ends[-1]
         d_dest, d_orig = haversine_nm(s.lat, s.lon, dlat, dlon), haversine_nm(s.lat, s.lon, olat, olon)
@@ -2045,6 +2165,25 @@ class Monitor:
         return (ad < 150 and heading_diff(s.track, bearing(s.lat, s.lon, alat, alon)) <= 20
                 and ((s.vrate or 0) <= -300 or (s.alt or 0) < 20000))
 
+    def amman_traffic(self, t: Track) -> str:
+        """Amman's own traffic over Israel, else "". Royal Jordanian crosses Israel between Amman and
+        the west every day (5 TOWARD_ISRAEL alerts in each of the runs of 10-11 and 11-12 Oct 2026).
+        Not alerted: inbound from the west and pointing at Amman; on approach to it from the east
+        (near, low or descending); climbing out of it in the last 20 min. Still alerted: coming
+        from the east and flying on past Amman, and a departure that turns down toward Israel."""
+        s = t.last
+        alat, alon, _ = REGION_AIRPORTS["AMM"]
+        d = haversine_nm(s.lat, s.lon, alat, alon)
+        if t.amm_dep and s.t - t.amm_dep <= 1200 and (s.vrate or 0) > -500:
+            return "climbing out of Amman"
+        if d < 15 or heading_diff(s.track, bearing(s.lat, s.lon, alat, alon)) > self.args.toward_dest_tol:
+            return ""
+        if s.lon < 35.6 and d <= 150:  # over or west of Israel
+            return "inbound to Amman from the west"
+        if d <= 60 and ((s.vrate or 0) < -300 or (s.alt or 0) < 15000):
+            return "on approach to Amman"
+        return ""
+
     def check_protected(self, t: Track, kind: str, route: str | None) -> None:
         """A flight not bound for Israel turning toward it, or about to enter its airspace."""
         a, s = self.args, t.last
@@ -2058,22 +2197,25 @@ class Monitor:
                 or (route and ISRAELI_CODES & set(route.split("-")))
                 or (s.alt < 15000 and nearest_airport(s.lat, s.lon, israeli=True)[1] < 60)):
             return  # Israel traffic (incl. low near an Israeli airport: just left / about to land)
-        eta = minutes_to(ISRAEL, s.lat, s.lon, s.track, s.gs, a.toward_eta)
+        eta = minutes_to(ISRAEL, s.lat, s.lon, s.track, s.gs, a.toward_eta, over_israel)
         if eta is None:
             return
         apt, ad = nearest_airport(s.lat, s.lon, israeli=False)
         if ad < 40 and (s.vrate or 0) < -300:
             return  # descending into its own (non-Israeli) airport
+        if self.amman_traffic(t):
+            return
         if self.toward_own_airport(t):
             return  # pointing at its own destination (or origin) beyond Israel
         prev = t.samples[-2] if len(t.samples) > 1 else None
         if (not prev or prev.track is None
-                or minutes_to(ISRAEL, prev.lat, prev.lon, prev.track, prev.gs or s.gs, a.toward_eta) is None):
+                or minutes_to(ISRAEL, prev.lat, prev.lon, prev.track, prev.gs or s.gs, a.toward_eta,
+                              over_israel) is None):
             return  # must point there on two samples in a row
         old = t.sample_ago(240)
         turned = (old is not None and old.track is not None
                   and heading_diff(s.track, old.track) >= a.toward_turn
-                  and minutes_to(ISRAEL, old.lat, old.lon, old.track, old.gs or s.gs, 30) is None)
+                  and minutes_to(ISRAEL, old.lat, old.lon, old.track, old.gs or s.gs, 30, over_israel) is None)
         what = f"not bound for Israel ({kind}{' ' + route if route else ''})"
         if turned and not self.zones.expected(s.lat, s.lon, s.track):
             msg = (f"{what} - turned {old.track:.0f} -> {s.track:.0f} deg toward Israeli airspace, "
@@ -2256,12 +2398,49 @@ class Monitor:
         if ep is not None:
             ep["last"], ep["track"] = x.t, t
             t.gps, t.gps_last = ep["label"], x.t
-        last = t.last
-        if last is None or (x.t > last.t and haversine_nm(last.lat, last.lon, x.lat, x.lon)
-                            <= 3 + 650 * (x.t - last.t) / 3600):
+        last, bad = t.last, t.nic_bad
+        # The reach grows with the time since the last trusted report, so a fake place repeated for
+        # minutes came within it: ISR972 on approach to TLV, 12 Oct 2026, "at" 33.08,35.56 (73 nm
+        # away) was dropped for 3 min, then taken, and its silence there read as a diversion. A
+        # report that continues the dropped ones (reachable from the last of them) is dropped too.
+        follows = (bad is not None and 0 <= x.t - bad.t <= 300 and haversine_nm(bad.lat, bad.lon, x.lat, x.lon)
+                   <= 3 + 650 * (x.t - bad.t) / 3600)
+        if not follows and (last is None or (x.t > last.t and haversine_nm(last.lat, last.lon, x.lat, x.lon)
+                                             <= 3 + 650 * (x.t - last.t) / 3600)):
+            t.nic_bad = None
             return ""  # untrusted by the aircraft, but where it could be: keep watching it
-        log.info("%s NIC 0 position %.4f,%.4f out of reach of its last trusted one - dropped", t.label(), x.lat, x.lon)
+        if not (follows and bad.t == x.t):  # (the same stale position again: said once)
+            log.info("%s NIC 0 position %.4f,%.4f out of reach of its last trusted one - dropped",
+                     t.label(), x.lat, x.lon)
+        t.nic_bad = x
         return t.gps or "nic0"
+
+    def unreal_ground(self, t: Track, x: Sample) -> str:
+        """A label when an "on the ground" report cannot be: rolling faster than GROUND_MAX_KT, or
+        farther from the last trusted position than the flight could have gone. The aircraft's
+        air / ground switch is right while its GPS is not: three arrivals touching down at TLV on
+        11-12 Oct 2026 were "on the ground" 92-108 nm away (DIVERSION), one of them at 575 kt.
+        Ground reports are judged by neither spoofed() nor integrity()."""
+        if not x.on_ground or x.mlat:
+            return ""
+        last = t.last
+        if x.gs is not None and x.gs > GROUND_MAX_KT:
+            why = f"at {x.gs:.0f} kt"
+        elif last is not None and x.t > last.t and (haversine_nm(last.lat, last.lon, x.lat, x.lon)
+                                                    > 3 + 650 * (x.t - last.t) / 3600):
+            why = "out of reach of its last trusted position"
+        else:
+            return ""
+        self.note(t, "unreal", f"reported on the ground at {x.lat:.4f},{x.lon:.4f} {why} - dropped")
+        return t.spoof or t.gps or "fake ground position"
+
+    def note(self, t: Track, key: str, text: str, every: float = 600) -> None:
+        """Log a remark about a track at most once per `every` s (a condition seen on every poll)."""
+        now = self.clock()
+        if now - self.noted.get((t.hex, key), -1e12) >= every:
+            self.noted = {k: v for k, v in self.noted.items() if now - v < 3600}
+            self.noted[(t.hex, key)] = now
+            log.info("%s %s", t.label(), text)
 
     def off_mlat(self, t: Track, x: Sample) -> bool:
         """A GPS report farther from the flight's latest MLAT fix (<= 3 min old) than it could have

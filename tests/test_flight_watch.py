@@ -1224,6 +1224,194 @@ def with_routes(argv=()):
     return mon, feed, clock, alerts
 
 
+class CallsignAndLegTests(unittest.TestCase):
+    """12 Oct 2026: identity and leg state carried across a callsign change gave 9 false alerts."""
+    TLV = (32.0114, 34.8867)
+    BOARD = [("6H", "46", "A", 0.5, "ETM"), ("6H", "723", "D", -0.3, "BUD")]
+
+    def board(self):
+        return with_board([board_row(op, n, d, local_time(Clock(), h), other) for op, n, d, h, other in self.BOARD])
+
+    def inbound(self, flip, other_aircraft):
+        """ISR046 flying north to TLV from 110 nm; for `flip` polls the feed calls it ISR723."""
+        mon, feed, clock, alerts = self.board()
+        if other_aircraft:  # the real ISR723, climbing out to the north-west
+            feed.local.add("738284")
+            feed.aircraft["738284"] = {**airborne(32.6, 34.2, 24000, track=320, flight="ISR723"), "r": "4X-ABF"}
+        states = path(30.2, 35.0, [5] * 60, [16000] * 60, gs=400)
+        fly(mon, feed, clock, "738285", states[:30], flight="ISR046", r="4X-ABG")
+        fly(mon, feed, clock, "738285", states[30:30 + flip], flight="ISR723", r="4X-ABG")
+        fly(mon, feed, clock, "738285", states[30 + flip:], flight="ISR046", r="4X-ABG")
+        return mon, alerts
+
+    def test_callsign_of_another_aircraft_is_refused(self):
+        mon, alerts = self.inbound(flip=20, other_aircraft=True)
+        self.assertEqual(kinds(alerts, "738285"), [])
+        self.assertEqual(mon.tracks["738285"].callsign, "ISR046")
+
+    def test_short_wrong_callsign_is_not_taken_up(self):
+        mon, alerts = self.inbound(flip=6, other_aircraft=False)
+        self.assertEqual(kinds(alerts, "738285"), [])
+        self.assertEqual(mon.tracks["738285"].sched.flight, "6H46")
+
+    def test_lasting_change_is_taken_up_as_a_new_leg(self):
+        mon, feed, clock, alerts = self.board()
+        fly(mon, feed, clock, "738285", path(31.0, 34.9, [0] * 10, [16000] * 10, gs=300), flight="ISR046", r="4X-ABG")
+        t = mon.tracks["738285"]
+        self.assertTrue(t.was_airborne)
+        fly(mon, feed, clock, "738285", path(31.2, 34.9, [0] * 16, [16000] * 16, gs=300), flight="ISR999", r="4X-ABG")
+        self.assertEqual(t.callsign, "ISR999")
+        self.assertIsNone(t.sched)  # (no longer the board's 6H46)
+        self.assertGreater(t.leg_start, 0)
+
+    def test_unseen_landing_then_the_next_flights_callsign_is_not_returned(self):
+        """ELY5120 last heard at 4,025 ft 4 nm out; 2 h 20 min later on the ground as ELY5101."""
+        mon, feed, clock, alerts = with_board([board_row("LY", "5120", "A", local_time(Clock(), 0.3), "KRK"),
+                                               board_row("LY", "5101", "D", local_time(Clock(), 14), "WAW")])
+        start = fw.destination(*self.TLV, 300, 145)
+        n = 124
+        fly(mon, feed, clock, "738060", path(*start, [120] * n, [30000 - 210 * i for i in range(n)]),
+            flight="ELY5120", r="4X-EKM", t="B738")
+        feed.local.discard("738060")
+        del feed.aircraft["738060"]
+        for _ in range(30):
+            step(mon, clock, 60)
+        for _ in range(20):
+            fly(mon, feed, clock, "738060", [dict(lat=self.TLV[0], lon=self.TLV[1], alt_baro="ground", gs=3,
+                                                  track=30)], dt=30, flight="ELY5101", r="4X-EKM", t="B738")
+        self.assertNotIn("RETURNED", kinds(alerts, "738060"))
+        self.assertEqual(mon.tracks["738060"].sched.flight, "LY5101")
+
+    def test_departure_with_the_arrivals_board_row_is_not_off_course(self):
+        """TVF3452 landed at TLV and left as TVF55BJ, still bound to the arrival's row."""
+        mon, feed, clock, alerts = with_board([board_row("TO", "3452", "A", local_time(Clock(), 0.2), "ORY")])
+        mon.schedule.airline_map["TO"] = "TVF"
+        mon.schedule.load([board_row("TO", "3452", "A", local_time(Clock(), 0.2), "ORY")],
+                          datetime.fromtimestamp(clock(), mon.schedule.tz))
+        ground = [dict(lat=self.TLV[0], lon=self.TLV[1], alt_baro="ground", gs=2, track=260)]
+        fly(mon, feed, clock, "39dd03", ground * 3, flight="TVF3452", r="F-HXID", t="A20N")
+        self.assertEqual(mon.tracks["39dd03"].sched.flight, "TO3452")
+        fly(mon, feed, clock, "39dd03", ground * 14, flight="TVF55BJ", r="F-HXID", t="A20N")
+        n = 90
+        fly(mon, feed, clock, "39dd03", path(*self.TLV, [300] * n, [min(36000, 2000 + 500 * i) for i in range(n)],
+                                             gs=400), flight="TVF55BJ", r="F-HXID", t="A20N")
+        self.assertNotIn("OFF_COURSE", kinds(alerts, "39dd03"))
+
+
+class FakeLandingTests(unittest.TestCase):
+    """11-12 Oct 2026: four arrivals on approach to TLV with spoofed GPS were DIVERSIONs."""
+    TLV = (32.0114, 34.8867)
+
+    def approach(self, argv=()):
+        mon, feed, clock, alerts = with_board([board_row("LY", "5462", "A", local_time(Clock(), 0.2), "RHO")], argv)
+        start = fw.destination(*self.TLV, 300, 45)
+        n = 20
+        fly(mon, feed, clock, "452144", path(*start, [120] * n, [10000 - 150 * i for i in range(n)], gs=300),
+            flight="ELY5462", r="LZ-EAI")
+        return mon, feed, clock, alerts
+
+    def ground_at(self, mon, feed, clock, lat, lon, polls, gs=6, dt=10):
+        fly(mon, feed, clock, "452144", [dict(lat=lat, lon=lon, alt_baro="ground", gs=gs, track=298)] * polls,
+            dt=dt, flight="ELY5462", r="LZ-EAI")
+
+    def test_ground_report_out_of_reach_is_dropped(self):
+        mon, feed, clock, alerts = self.approach()
+        self.ground_at(mon, feed, clock, 30.4809, 35.9801, 12)   # 108 nm away, 10 s after 28 nm out
+        self.ground_at(mon, feed, clock, *self.TLV, 12)
+        self.assertNotIn("DIVERSION", kinds(alerts))
+        self.assertTrue(all(fw.haversine_nm(x.lat, x.lon, *self.TLV) < 50 for x in mon.tracks["452144"].samples))
+
+    def test_on_the_ground_at_575_kt_is_dropped(self):
+        mon, feed, clock, alerts = self.approach()
+        self.ground_at(mon, feed, clock, 32.25, 35.05, 6, gs=575)
+        self.assertNotIn("DIVERSION", kinds(alerts))
+
+    def test_a_landing_elsewhere_is_at_an_airport(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "airports", "schema-01", "O"))
+            with open(os.path.join(d, "airports", "schema-01", "O", "OJ.csv"), "w") as f:
+                f.write(ROUTE_FILES["airports/schema-01/O/OJ.csv"])
+            for (lat, lon), expected in (((31.9994, 36.6858), 0), ((31.7226, 35.9932), 1)):  # desert / Amman
+                mon, feed, clock, alerts = self.approach(["--standing-data", d])
+                mon.standing = fw.StandingData(mon.http, d)
+                feed.local.discard("452144")
+                del feed.aircraft["452144"]
+                for _ in range(15):   # unheard for 15 min: the place is within reach
+                    step(mon, clock, 60)
+                self.ground_at(mon, feed, clock, lat, lon, 4, dt=30)
+                self.assertEqual(kinds(alerts).count("DIVERSION"), expected, (lat, lon, kinds(alerts)))
+
+    def test_fake_position_repeated_for_minutes_stays_out(self):
+        """ISR972: NIC-0 reports 73 nm away were dropped for 3 min and then came within reach."""
+        mon, feed, clock, alerts = self.approach()
+        fake = dict(lat=33.0777, lon=35.5611, alt_baro=1575, gs=474, track=62, baro_rate=-600, nic=0)
+        t = mon.tracks["452144"]
+        t.nic_last = 8
+        fly(mon, feed, clock, "452144", [fake] * 60, flight="ELY5462", r="LZ-EAI")  # 10 min
+        self.assertTrue(all(fw.haversine_nm(x.lat, x.lon, *self.TLV) < 50 for x in t.samples))
+        feed.local.discard("452144")
+        del feed.aircraft["452144"]
+        for _ in range(30):
+            step(mon, clock)
+        self.assertNotIn("DIVERSION", kinds(alerts))
+
+
+class AmmanAndEilatTests(unittest.TestCase):
+    """TOWARD_ISRAEL, 11-12 Oct 2026: 5 Royal Jordanian flights on the daily corridor over Israel
+    and 5 flights passing Taba / Aqaba whose straight line clipped Eilat."""
+    AMM = (31.7226, 35.9932)
+
+    def run_path(self, states, **ident):
+        mon, feed, clock, alerts = make(["--no-routes"])
+        fly(mon, feed, clock, "744824", states, **{"flight": "RJA873", "r": "JY-RAD", "t": "A20N", **ident})
+        return kinds(alerts)
+
+    def test_inbound_to_amman_from_the_west_is_quiet(self):
+        start = (32.33, 33.6)
+        trk = fw.bearing(*start, *self.AMM)
+        self.assertNotIn("TOWARD_ISRAEL", self.run_path(path(*start, [trk] * 60, [26000] * 60, gs=430)))
+
+    def test_climbing_out_of_amman_westward_is_quiet(self):
+        n = 70
+        alts = [min(30000, 3500 + 400 * i) for i in range(n)]
+        self.assertNotIn("TOWARD_ISRAEL", self.run_path(path(31.74, 35.90, [285] * n, alts, gs=330), flight="RJA872"))
+
+    def test_from_the_east_flying_on_past_amman_alerts(self):
+        self.assertIn("TOWARD_ISRAEL", self.run_path(path(31.7226, 37.3, [270] * 110, [35000] * 110, gs=480),
+                                                     flight="RJA555"))
+
+    def test_passing_eilat_is_quiet_but_the_negev_is_not(self):
+        east = lambda lat: path(lat, 33.6, [90] * 80, [39000] * 80, gs=480)  # noqa: E731
+        self.assertNotIn("TOWARD_ISRAEL", self.run_path(east(29.60), flight="VJT536", r="9H-VFN", t="CL60"))
+        self.assertIn("TOWARD_ISRAEL", self.run_path(east(30.40), flight="VJT536", r="9H-VFN", t="CL60"))
+
+
+class MlatSpeedTests(unittest.TestCase):
+    def descent(self, mlat_gs, **ident):
+        """A 5,300 ft/min descent at 400 kt (7.5 deg), every position MLAT."""
+        mon, feed, clock, alerts = make(["--no-routes"])
+        n = 30
+        states = path(32.65, 34.45, [215] * n, [39000] * 12 + [39000 - 880 * i for i in range(n - 12)], gs=400)
+        states = [{**st, "type": "mlat", "mlat": ["lat", "lon", "gs"], "gs": mlat_gs} for st in states]
+        fly(mon, feed, clock, "738a4b", states, **ident)
+        return alerts
+
+    def test_mlat_speed_estimate_does_not_make_a_descent_steep(self):
+        """GLF5 "684", 12 Oct 2026: MLAT said 257 kt on one poll (really 455) -> 11.1 deg."""
+        self.assertNotIn("VERTICAL_RATE", kinds(self.descent(250, flight="GLF684", r="684", t="GLF5", dbFlags=1)))
+
+    def test_military_and_mlat_are_said_in_the_alert(self):
+        mon, feed, clock, alerts = make(["--no-routes"])
+        n = 30
+        states = path(32.65, 34.45, [215] * n, [39000] * 12 + [39000 - 1500 * i for i in range(n - 12)], gs=300)
+        states = [{**st, "type": "mlat", "mlat": ["lat", "lon", "gs"]} for st in states]
+        fly(mon, feed, clock, "738a4b", states, flight="GLF684", r="684", t="GLF5", dbFlags=1)
+        hits = [a for a in alerts if a["kind"] == "VERTICAL_RATE"]
+        self.assertTrue(hits, kinds(alerts))
+        self.assertIn("military aircraft", hits[0]["message"])
+        self.assertIn("MLAT position: speed from its positions", hits[0]["message"])
+
+
 class StandingDataTests(unittest.TestCase):
     def test_airline_name_and_flight_number_in_alerts(self):
         """An airline missing from AIRLINE_ICAO still gets its name and IATA number from the list."""
@@ -1488,7 +1676,6 @@ class AnnouncerTests(unittest.TestCase):
         self.assertIsNotNone(ann.announce(alert_rec("EMERGENCY", "squawk 7700 (GENERAL EMERGENCY)", 5)))
 
     def test_posts_are_written_as_json_lines(self):
-        import tempfile
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "posts.jsonl")
             ann, _ = self.make("--posts", path)
