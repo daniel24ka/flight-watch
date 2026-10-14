@@ -1341,6 +1341,31 @@ class FakeLandingTests(unittest.TestCase):
                 self.ground_at(mon, feed, clock, lat, lon, 4, dt=30)
                 self.assertEqual(kinds(alerts).count("DIVERSION"), expected, (lat, lon, kinds(alerts)))
 
+    def test_landing_at_the_spoofers_place_is_not_a_diversion(self):
+        """14 Oct 2026: the fake place was Amman airport; 10 arrivals on final "landed" or went silent there."""
+        for low in (False, True):
+            mon, feed, clock, alerts = self.approach()
+            for i in range(3):  # others still heard: not a feed glitch
+                feed.aircraft[f"77777{i}"] = dict(lat=32.3 + i / 10, lon=34.2, alt_baro=30000, gs=450, track=90,
+                                                  flight=f"TST00{i}  ", r="SX-ABC", t="A320")
+                feed.local.add(f"77777{i}")
+            mon.spoofs.append(dict(label="spoof-x", lat=31.7171, lon=35.9995, start=clock.t, last=clock.t + 1500, track=None,
+                                   alerted=True, hexes={"aaaaaa", "bbbbbb"}, ended=False))
+            feed.local.discard("452144")
+            del feed.aircraft["452144"]
+            for _ in range(15):
+                step(mon, clock, 60)
+            if low:   # heard low over the place, then silent
+                fly(mon, feed, clock, "452144", [dict(lat=31.7171, lon=35.9995, alt_baro=1450, gs=140, track=298,
+                                                      baro_rate=-700)] * 4, dt=30, flight="ELY5462", r="LZ-EAI")
+                feed.local.discard("452144")
+                del feed.aircraft["452144"]
+                for _ in range(48):   # (polls 10 s apart: a longer gap is our own outage)
+                    step(mon, clock, 10)
+            else:
+                self.ground_at(mon, feed, clock, 31.7172, 35.9993, 4, dt=30)
+            self.assertNotIn("DIVERSION", kinds(alerts), low)
+
     def test_fake_position_repeated_for_minutes_stays_out(self):
         """ISR972: NIC-0 reports 73 nm away were dropped for 3 min and then came within reach."""
         mon, feed, clock, alerts = self.approach()
@@ -1534,6 +1559,14 @@ class RouteOffCourse(unittest.TestCase):
         hits = self.run_track("UAE122")       # listed LTFM-OMDB, flown toward Istanbul
         self.assertTrue(hits)
         self.assertIn("bound for LTFM", hits[0]["message"])
+
+    def test_descending_toward_an_airport_is_landing_there(self):
+        """THY6264, listed LTBA-WSSS, turned from its cruise to descend into Amman (14 Oct 2026)."""
+        n = len(self.TRACKS)
+        for alts, expected in (([33000] * n, True), ([33000] * 30 + [33000 - 300 * i for i in range(1, n - 28)], False)):
+            mon, feed, clock, alerts = with_routes()   # turning back toward Al Jouf (AJF), ~120 nm ahead
+            fly(mon, feed, clock, "896121", path(31.0, 39.0, self.TRACKS, alts), flight="UAE121", r="A6-EUA")
+            self.assertEqual("OFF_COURSE" in kinds(alerts), expected, kinds(alerts))
 
     def test_no_alert_while_flying_the_route(self):
         mon, feed, clock, alerts = with_routes()

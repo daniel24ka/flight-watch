@@ -120,13 +120,18 @@ FB.boardUpdated = async function (fetchFn) {
 };
 
 /** Board rows -> one object per physical flight, as flight_watch.Schedule.load groups them:
- *  rows sharing direction, scheduled time and other airport are one flight (codeshares); the
- *  lowest flight number is the operating carrier, whose callsign the aircraft sends. Unlike the
- *  monitor nothing is filtered out (cancelled, landed, far in time): the page shows all. */
+ *  rows sharing direction, scheduled time and other airport are one flight (codeshares), unless an
+ *  airline is there with two numbers (ENT238 / ENT368 from KTW, both 04:00 on 14 Oct 2026: two aircraft; id
+ *  "<slot>|2" for the second); the lowest flight number is the operating carrier, whose callsign the
+ *  aircraft sends. Unlike the monitor nothing is filtered out (cancelled, landed, far in time): the page shows all. */
 FB.flights = function (records, airlineMap) {
   const map = airlineMap || FB.AIRLINE_ICAO, slots = new Map();
+  const op = r => String(r.CHOPER || "").trim().toUpperCase();
+  const num = r => String(r.CHFLTN || "").trim().replace(/^0+/, "");
   for (const r of records) {
-    const key = [String(r.CHAORD || "").toUpperCase().slice(0, 1), r.CHSTOL, r.CHLOC1].join("|");
+    const slot = [String(r.CHAORD || "").toUpperCase().slice(0, 1), r.CHSTOL, r.CHLOC1].join("|");
+    let n = 1, key = slot;
+    while (slots.has(key) && slots.get(key).some(x => op(x) === op(r) && num(x) !== num(r))) key = slot + "|" + ++n;
     if (!slots.has(key)) slots.set(key, []);
     slots.get(key).push(r);
   }
@@ -232,6 +237,19 @@ FB.byHex = async function (hex) {
   const d = await FB.getJSON(FB.feedBase() + "/v2/hex/" + hex);
   return {now: d.now ? d.now / 1000 : Date.now() / 1000, ac: (d.ac || d.aircraft || [])[0] || null};
 };
+/** One readsb trace row [dt, lat, lon, alt, gs, track, flags, rate, {flight, ...} | null, ...] as a point;
+ *  cs: the callsign the aircraft sent, on the rows that carry it. */
+FB.tracePoint = function (d, p) {
+  const pt = {t: d.timestamp + p[0], lat: p[1], lon: p[2], alt: p[3], gs: p[4]};
+  if (p[8] && p[8].flight && p[8].flight.trim()) pt.cs = p[8].flight.trim();
+  return pt;
+};
+/** The callsign sent nearest to time t in these points, or "". */
+FB.callsignAt = function (pts, t) {
+  let best = null;
+  for (const p of pts) if (p.cs && (!best || Math.abs(p.t - t) < Math.abs(best.t - t))) best = p;
+  return best ? best.cs : "";
+};
 /** Today's positions of one aircraft (readsb trace_full; rows [dt, lat, lon, alt, gs, track, ...]). */
 FB.trace = async function (hex) {
   const xx = hex.slice(-2);
@@ -239,7 +257,7 @@ FB.trace = async function (hex) {
   for (const kind of ["full", "recent"]) {
     try {
       const d = await FB.getJSON(FB.traceBase() + "/data/traces/" + xx + "/trace_" + kind + "_" + hex + ".json");
-      for (const p of d.trace || []) out.push({t: d.timestamp + p[0], lat: p[1], lon: p[2], alt: p[3], gs: p[4]});
+      for (const p of d.trace || []) out.push(FB.tracePoint(d, p));
     } catch (e) { /* not available: the trail is built from the live positions instead */ }
   }
   out.sort((a, b) => a.t - b.t);
@@ -250,7 +268,7 @@ FB.trace = async function (hex) {
 FB.traceDay = async function (hex, day) {
   const d = await FB.getJSON(FB.traceBase() + "/globe_history/" + day.replace(/-/g, "/") + "/traces/" + hex.slice(-2) +
                              "/trace_full_" + hex + ".json");
-  return (d.trace || []).map(p => ({t: d.timestamp + p[0], lat: p[1], lon: p[2], alt: p[3], gs: p[4]}));
+  return (d.trace || []).map(p => FB.tracePoint(d, p));
 };
 /** The flight an alert at time `t` belongs to: the leg around t (at most 30 min away from it), or null.
  *  tookOff / landed: that end of the leg is a real one (on the ground next to it, or under 200 kt, i.e.

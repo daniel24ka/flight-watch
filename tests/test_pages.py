@@ -56,6 +56,8 @@ ROWS = [
     row("LY", "001", "A", "2026-10-08T23:30:00", "JFK", "NOT FINAL", "2026-10-09T00:10:00"),
     row("W6", "2328", "A", "2026-10-08T12:00:00", "BUD"),
     row("FZ", "1073", "A", "2026-10-25T09:05:00", "DXB"),           # after the change back to winter time
+    row("ENT", "238", "A", "2026-10-08T10:00:00", "KTW", est="2026-10-08T09:47:00"),  # one airline twice
+    row("ENT", "368", "A", "2026-10-08T10:00:00", "KTW", est="2026-10-08T10:11:00"),  # in a slot: two flights
 ]
 
 
@@ -78,10 +80,21 @@ class BoardLogicMatchesPython(unittest.TestCase):
             self.assertEqual(tuple(f["codeshares"]), sf.codeshares, sf.flight)
             self.assertEqual(f["est"], sf.ts, sf.flight)          # epoch seconds, Israel time read alike
         # the page also lists what the monitor skips: cancelled, landed, unmapped airlines
-        self.assertEqual(len(js), 8)  # 10 rows, two of them codeshares
+        self.assertEqual(len(js), 10)  # 12 rows, two of them codeshares
+        self.assertEqual(js["A|2026-10-08T10:00:00|KTW|2"]["callsigns"], ["ENT368"])
+        self.assertEqual(js["A|2026-10-08T10:00:00|KTW"]["codeshares"], [])
         self.assertEqual(js["D|2026-10-08T07:50:00|SKG"]["callsigns"], [])
         self.assertEqual(js["D|2026-10-08T10:00:00|EWR"]["flight"], "LY25")
         self.assertEqual(js["A|2026-10-08T05:50:00|AUH"]["codeshares"], ["LY9604"])
+
+    def test_trace_points_keep_the_callsign_sent(self):
+        d = {"timestamp": 1000, "trace": [[0, 32.0, 35.0, 30000, 450, 90, 0, 0, {"flight": "ENT368  "}],
+                                          [60, 32.1, 35.1, 29000, 440, 90, 0, -900, None],
+                                          [600, 32.2, 35.2, 20000, 400, 90, 0, -900, {"flight": "ENT369  "}]]}
+        pts = node("DATA.trace.map(p => FB.tracePoint(DATA, p))", d)
+        self.assertEqual([p.get("cs") for p in pts], ["ENT368", None, "ENT369"])
+        self.assertEqual(node("FB.callsignAt(DATA, 1100)", pts), "ENT368")
+        self.assertEqual(node("FB.callsignAt(DATA, 0)", []), "")
 
     def test_israel_time_across_dst_changes(self):
         # 25 Oct 01:30 happens twice (summer time ends); 27 Mar 02:30 never happens (it starts)

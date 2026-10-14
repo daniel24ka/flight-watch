@@ -58,7 +58,9 @@ then the callsign's route in the VRS standing data, then a heuristic near the ai
 show the same flight whenever they are opened, live while it flies and a replay afterwards (11 Oct 2026). The page
 reads the aircraft's trace (`/data/traces` reaches back about a day; older: adsb.lol's free
 `/globe_history/YYYY/MM/DD/traces/<xx>/trace_full_<hex>.json`, relayed by the worker from 0.5 and by `serve.py`),
-takes the leg around `t` (`FB.flightAt`) and shows it live (heard in the last 15 min, nothing after it) or as a
+takes the leg around `t` (`FB.flightAt`; the title adds the callsign the aircraft sent when it is not the board's, and the
+ICAO hex, so our map and ADS-B Exchange's can be compared; an aircraft off the board takes its ends from the route data
+by that callsign) and shows it live (heard in the last 15 min, nothing after it) or as a
 drawn track with the alert's point; "our map / ADS-B Exchange / both" puts ADS-B Exchange's map in an iframe
 (it and adsb.lol send no X-Frame-Options; airplanes.live, adsb.fi and FR24 refuse), live or `FB.replayURL`:
 `showTrace` + `timestamp`, with `startTime` / `endTime` only at ends known to be real (ground, or < 200 kt),
@@ -69,7 +71,8 @@ a trace: live for 20 min after the alert, then the replay. A replay shows one UT
 **Flight pages** (`docs/flights.html`, `docs/flight_map.html`, shared `docs/flightboard.js`;
 local helper `tools/serve.py`): the board table and a live map of one flight, processed in the
 browser. The owner wants the browser (JS) and the monitor (Python) to process alike: the JS
-board logic is a port of `Schedule.load` (slot grouping, lowest flight number = operating carrier,
+board logic is a port of `Schedule.load` (slot grouping - one airline with two numbers in a slot is two flights:
+ENT238 and ENT368 from KTW were both due 04:00 on 14 Oct 2026, and SP-ESD flying ENT368 was taken as ENT238 -, lowest flight number = operating carrier,
 callsign variants), `FB.AIRLINE_ICAO` is a copy of `AIRLINE_ICAO`, `FB.israelEpoch` reads board
 times as Python does (fold=0 at DST changes), and `tests/test_pages.py` runs the JS under node on
 the same rows and fails when they differ - change both together. Not ported yet: Python's
@@ -165,6 +168,11 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   reach of the last trusted position (`unreal_ground`: the air / ground switch is right while the GPS is not,
   and `spoofed()` / `integrity()` never judged ground reports). The list lacks some military fields (nothing
   near Azraq): a real landing at one is only logged ("not taken as a landing").
+  The spoofer's place is itself an airport (Amman, 6 and 13-14 Oct 2026), and arrivals on final are too low for the
+  motionless-at-height test: 10 DIVERSIONs "landing at AMM" in 75 min on 14 Oct, all landed at TLV (ET404 passed
+  Amman at 15,750 ft; its GPS then gave the Amman point at 0.7 kt while MLAT had it over Israel). So no DIVERSION
+  (on the ground, or silent low) for a flight in an episode or within `SPOOF_PLACE_NM` (30) of a confirmed spoofing
+  point (`fake_place`); logged instead. Cost: a real landing at Amman during an episode is only logged.
 - **Callsign changes** (`Monitor.new_callsign`, 13 Oct 2026; 9 false alerts in the run of 11-12 Oct): a changed
   callsign is taken up after `CALLSIGN_HOLD` (120 s) and refused while another tracked aircraft sends it -
   adsb.lol gave 4X-ABG the callsign ISR723 for 55 s (4X-ABF's; ADS-B Exchange's trace never had it) and ISR050
@@ -229,7 +237,9 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   (within 60 deg) while closing. OFF_COURSE also covers any flight with a plausible route
   flying away from its (learned-direction) destination; without the direction and corridor
   checks this gave 20 false alarms on Beirut departures in the replay. Route bends (Gulf flights via Saudi Arabia and Jordan) stayed
-  below 65 deg in the replay; FZ1073 reached 165 deg.
+  below 65 deg in the replay; FZ1073 reached 165 deg. A route-based OFF_COURSE is not raised while the flight descends
+  (<= -500 ft/min, below FL300) toward a regional airport <= 150 nm ahead (`descending_toward`): THY6264, listed LTBA-WSSS,
+  flew Istanbul - Amman on 14 Oct 2026 and alerted at FL254 descending, 90 nm from Amman.
 - **TOWARD_ISRAEL**: the hijack scenario of a flight *not* bound for Israel turned toward it.
   Military aircraft (readsb dbFlags) are exempt: on 6 Oct 29 of 33 alerts were USAF KC-135
   tankers, a military Gulfstream (IRON) and a Canadian C-130 operating over Israel for hours.

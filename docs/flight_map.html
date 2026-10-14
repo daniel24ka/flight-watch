@@ -3,7 +3,7 @@
 <link rel="icon" type="image/png" href="logo.png">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="https://unpkg.com/deck.gl@9.1.14/dist.min.js"></script>
-<script src="flightboard.js?v=4d7d592c"></script>  <!-- v = first 8 hex of its sha256: a changed file is never taken from the browser cache -->
+<script src="flightboard.js?v=17d3d813"></script>  <!-- v = first 8 hex of its sha256: a changed file is never taken from the browser cache -->
 <style>
 html,body{margin:0;height:100%;font-family:sans-serif;color:#222;background:#fff}
 body{display:flex;flex-direction:column}
@@ -184,7 +184,7 @@ async function show(f, ac, auto, none, hex, tries = 0) {
   }
   titles();
   render();
-  routeEnds(f, ac).then(ends => { cur.ends = ends; cur.endsDone = true; render(); });
+  routeEnds(f, ac).then(ends => { cur.ends = ends; cur.endsDone = true; titles(); render(); });
   if (ac) {
     const pts = await FB.trace(ac.hex);
     cur.trail = FB.currentLeg(pts);
@@ -241,6 +241,7 @@ async function alertView() {
   } catch (e) { failed = true; }
   const live = flight ? flight.live : now - t < 1200;
   const pt = flight && flight.leg.reduce((a, p) => Math.abs(p.t - t) < Math.abs(a.t - t) ? p : a);
+  const cs = flight ? FB.callsignAt(flight.leg, t) : "";  // what the aircraft sent (ENT368 on the board's ENT238)
   Object.assign(alertOf, {flight, live, pt, ext: live ? "https://globe.adsbexchange.com/?icao=" + hex : FB.replayURL(hex, t, flight)});
   $("views").style.display = "";
   let v = null;
@@ -249,7 +250,7 @@ async function alertView() {
   if (live) return show(f, null, false, false, hex);
   const when = x => FB.fmt(x, ZONE, "dhm");
   fitted = false;
-  cur = {f, ac: null, hex, hexMode: true, trail: flight ? flight.leg : [], ends: [], ended: true, fromTrace: !!flight, fetched: now,
+  cur = {f, ac: null, hex, cs, hexMode: true, trail: flight ? flight.leg : [], ends: [], ended: true, fromTrace: !!flight, fetched: now,
          msg: flight ? `${flight.landed ? "Landed" : "Last heard"} ${when(flight.end)}. The blue line is the flight of the alert ` +
                        `(from ${when(flight.start)}); the orange dot is where it was at the alert, ${when(t)}.`
             : failed ? `The track of the flight at ${when(t)} could not be loaded now. ADS-B Exchange shows it.`
@@ -257,7 +258,7 @@ async function alertView() {
   history.replaceState(null, "", "?" + new URLSearchParams(f.offBoard ? {hex, t} : {f: f.flight, d: f.dir[0], hex, t}));
   titles();
   render();
-  routeEnds(f, null).then(ends => { cur.ends = ends; cur.endsDone = true; render(); });
+  routeEnds(f, cs ? {flight: cs} : null).then(ends => { cur.ends = ends; cur.endsDone = true; titles(); render(); });
 }
 
 /** A flight no longer in the feed: its aircraft from the relay's callsign map (aircraft near TLV,
@@ -294,10 +295,20 @@ async function routeEnds(f, ac) {
   return far ? (f.dir === "ARR" ? [far, home] : [home, far]) : [home];
 }
 
+/** "<flight> <from> → <to> · <callsign sent, when not the board's> · <registration> · <ICAO hex>": the hex
+ *  and the callsign show which aircraft our map and ADS-B Exchange's are about. An aircraft off the board
+ *  takes its ends from the route data (crowd-sourced: THY6264 was listed LTBA-WSSS flying Istanbul - Amman). */
 function titles() {
-  const {f, ac} = cur, name = f.offBoard ? String(ac && ac.flight || "").trim() || cur.hex.toUpperCase() : f.flight;
-  $("title").textContent = f.offBoard ? name + (ac && ac.r ? " · " + ac.r : "")
-                                      : `${f.flight} ${f.dir === "ARR" ? f.city + " → TLV" : "TLV → " + f.city}`;
+  const {f, ac} = cur, sent = String(ac && ac.flight || cur.cs || "").trim();
+  const hex = String(cur.hex || ac && ac.hex || "").toUpperCase();
+  const name = f.offBoard ? sent || hex : f.flight;
+  const [a, b] = cur.ends || [], place = e => e.city || e.iata || e.icao;
+  const head = f.offBoard ? name + (a && b ? ` ${place(a)} → ${place(b)}` : "")
+                          : `${f.flight} ${f.dir === "ARR" ? f.city + " → TLV" : "TLV → " + f.city}`;
+  const extra = [!f.offBoard && sent && !f.callsigns.includes(sent) ? "sent " + sent : "",
+                 ac && ac.r || "", f.offBoard && name === hex ? "" : hex].filter(Boolean);
+  $("title").textContent = head + (extra.length ? " · " + extra.join(" · ") : "");
+  $("title").title = f.offBoard && a && b ? "route from the route database (crowd-sourced, sometimes wrong)" : "";
   document.title = name + " - TLV flight map";
 }
 

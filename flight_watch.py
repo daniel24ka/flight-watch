@@ -181,6 +181,8 @@ CALLSIGN_HOLD = 120
 GROUND_MAX_KT = 250
 # a landing elsewhere is at an airport: at most this far (nm) from one of the standing data
 LANDING_AIRPORT_NM = 5
+# a landing or a silence this close (nm) to a confirmed spoofing point says nothing about the aircraft
+SPOOF_PLACE_NM = 30
 # TOWARD_ISRAEL does not count the southern tip: airways pass Taba / Aqaba a few km from Eilat and
 # a straight line from them clips it (5 alerts on 11-12 Oct 2026, none entered). 50 km, the owner's choice
 # (25 km first: NMA445, Jordan -> Sinai, pointed 14-27 nm north of Eilat and still alerted).
@@ -818,13 +820,21 @@ class Schedule:
 
     def load(self, records: list[dict], now: datetime) -> None:
         # The board has one row per marketing flight number. Rows sharing direction, scheduled
-        # time and other airport are one physical flight (e.g. LY25 / DL7441).
-        slots: dict[tuple, list[dict]] = {}
+        # time and other airport are one physical flight (e.g. LY25 / DL7441) - unless an airline
+        # is there with two numbers: ENT238 and ENT368 from KTW, both due 04:00 on 14 Oct 2026, were two aircraft.
+        slots: dict[tuple, list[list[dict]]] = {}
         for r in records:
             key = (str(r.get("CHAORD", "")).upper()[:1], r.get("CHSTOL"), r.get("CHLOC1"))
-            slots.setdefault(key, []).append(r)
+            op = str(r.get("CHOPER") or "").strip().upper()
+            num = str(r.get("CHFLTN") or "").strip().lstrip("0")
+            groups = slots.setdefault(key, [])
+            g = next((g for g in groups if all(str(x.get("CHOPER") or "").strip().upper() != op
+                                               or str(x.get("CHFLTN") or "").strip().lstrip("0") == num for x in g)), None)
+            if g is None:
+                groups.append(g := [])
+            g.append(r)
         out, flights, unmapped = {}, [], set()
-        for rows in slots.values():
+        for rows in (g for groups in slots.values() for g in groups):
             r = rows[0]
             status = str(r.get("CHRMINE") or "").upper()
             direction = "ARR" if str(r.get("CHAORD", "")).upper().startswith("A") else "DEP"
@@ -2060,6 +2070,11 @@ class Monitor:
             # A landing is at an airport. On 11-12 Oct 2026 three arrivals touched down at TLV while
             # their GPS still gave a fake place ("on the ground" 92, 95 and 108 nm away, 33-63 nm
             # from any airport). Without the list of airports: not during a GPS episode.
+            fake = self.fake_place(t, s)
+            if fake:  # (the spoofer's place is an airport: Amman)
+                self.note(t, "ground", f"reported on the ground {d:.0f} nm from {self.args.airport} at "
+                          f"{s.lat:.4f},{s.lon:.4f} during {fake} - not taken as a landing")
+                return
             if (field[1] > LANDING_AIRPORT_NM) if field else (episode and ad > LANDING_AIRPORT_NM):
                 self.note(t, "ground", f"reported on the ground {d:.0f} nm from {self.args.airport} at "
                           f"{s.lat:.4f},{s.lon:.4f}, " + (f"{field[1]:.0f} nm from the nearest airport ({field[0]})"
@@ -2144,9 +2159,26 @@ class Monitor:
             return
         devs = [heading_diff(x.track, bearing(x.lat, x.lon, dlat, dlon)) for x in window]
         if min(devs) >= a.off_course and d_dest > was_dest + 3:
+            apt = self.descending_toward(t)
+            if apt:  # THY6264 "LTBA-WSSS" was Istanbul - Amman that night (14 Oct 2026)
+                self.note(t, "route", f"leaves its listed route ({self.routes[t.callsign][1]}) descending toward "
+                          f"{apt} - taken as landing there, the route data is not always right", every=1800)
+                return
             self.alert(t, "OFF_COURSE", f"bound for {dst} (route {self.routes[t.callsign][1]}) but heading "
                        f"{s.track:.0f} deg, {devs[-1]:.0f} deg away from it for {s.t - old.t:.0f}s, "
                        f"{d_dest:.0f} nm out and opening ({was_dest:.0f} -> {d_dest:.0f} nm)")
+
+    def descending_toward(self, t: Track) -> str | None:
+        """A regional airport <= 150 nm ahead (within --toward-dest-tol) of a flight descending
+        (<= -500 ft/min) below FL300: where it is landing, whatever its listed route says."""
+        s = t.last
+        if (s.vrate or 0) > -500 or (s.alt or 0) >= 30000 or s.track is None:
+            return None
+        for code, (lat, lon, _) in REGION_AIRPORTS.items():
+            if (10 < haversine_nm(s.lat, s.lon, lat, lon) <= 150
+                    and heading_diff(s.track, bearing(s.lat, s.lon, lat, lon)) <= self.args.toward_dest_tol):
+                return code
+        return None
 
     def toward_own_airport(self, t: Track) -> str | None:
         """ICAO of the route's origin/destination the flight is pointing at, if any."""
@@ -2247,6 +2279,12 @@ class Monitor:
                 if (t.followed and d > 30 and (s.vrate or 0) <= 0
                         and kind == "ARR" and silent >= 3 * a.lost_after):
                     t.lost = t.lost_alerted = True
+                    fake = self.fake_place(t, s)
+                    if fake:
+                        t.lost_alerted = False
+                        log.info("%s silent low at %.4f,%.4f during %s - a fake place, not taken as a landing",
+                                 t.label(), s.lat, s.lon, fake)
+                        continue
                     near = f", {ad:.0f} nm from {apt}" if ad <= 30 else ""
                     self.alert(t, "DIVERSION", f"{a.airport} arrival went silent descending through "
                                f"{s.alt} ft, {d:.0f} nm from {a.airport} at {s.lat:.4f},{s.lon:.4f}"
@@ -2276,6 +2314,12 @@ class Monitor:
             where = (f"last {s.alt} ft, {d:.0f} nm from {a.airport}, track {trk} deg, "
                      f"at {s.lat:.4f},{s.lon:.4f}")
             descending = (s.vrate or 0) <= 0
+            fake = self.fake_place(t, s)
+            if (s.alt or 0) < 12000 and descending and ad <= 30 and fake:
+                t.lost_alerted = False
+                log.info("%s silent %.0fs at %.4f,%.4f during %s - a fake place, not taken as a landing",
+                         t.label(), silent, s.lat, s.lon, fake)
+                continue
             if (s.alt or 0) < 12000 and descending and ad <= 30:
                 if kind == "ARR":  # a TLV arrival descending into another airport
                     t.lost_alerted = True
@@ -2348,6 +2392,20 @@ class Monitor:
                     t.spoof, t.spoof_last = ep["label"], s.t
                     ep["hexes"].add(t.hex)
                     return ep["label"]
+        return ""
+
+    def fake_place(self, t: Track, s: Sample) -> str:
+        """Label of the spoofing that makes s no evidence of where t is, else "": the flight is in an
+        episode (30 min after its last fake report) or s is within SPOOF_PLACE_NM of a confirmed
+        spoofing point. The point of 6 and 13 Oct 2026 is Amman airport itself: TLV arrivals on final,
+        too low for the motionless-at-height test, were put there "on the ground" or went silent
+        there - 10 DIVERSIONs "landing at AMM" in 75 min (14 Oct 2026, 02:18-03:42 IDT)."""
+        if t.spoof and s.t - t.spoof_last <= 1800:
+            return t.spoof
+        for ep in self.spoofs:
+            if (ep["alerted"] and s.t - ep["last"] <= 1800
+                    and haversine_nm(ep["lat"], ep["lon"], s.lat, s.lon) <= SPOOF_PLACE_NM):
+                return ep["label"]
         return ""
 
     def episode_label(self, prefix: str, when: float) -> str:
