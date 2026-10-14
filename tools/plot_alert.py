@@ -196,6 +196,27 @@ def trace_for(hexid: str, t: float) -> tuple[list[dict], str]:
     return sorted(pts, key=lambda p: p["t"]), "ADS-B Exchange history"
 
 
+def fixture_points(fixture: dict, hexid: str) -> list[dict]:
+    """A replay fixture's rows of one aircraft (tests/replay.py, tools/capture_incident.py,
+    tools/import_track.py) in the shape of points(); callsign and squawk carry on until they change."""
+    out, state = [], {}
+    for t, lat, lon, alt, gs, trk, vr, flight, squawk, _, _ in fixture["aircraft"][hexid]["points"]:
+        state.update({k: v for k, v in (("flight", flight), ("squawk", squawk)) if v})
+        out.append({"t": t, "lat": lat, "lon": lon, "alt": 0 if alt == "ground" else alt, "ground": alt == "ground",
+                    "geo": False, "gs": gs, "track": trk, "new_leg": False, "vrate": vr, "src": "adsb", **state})
+    return out
+
+
+def replay_alerts(path: str) -> tuple[dict, list[dict]]:
+    """The fixture and the alerts the monitor raises on it now (newest first, as load_alerts)."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
+    import replay
+    fixture = replay.load(path)
+    print(f"replaying {path} ...", file=sys.stderr)
+    alerts, *_ = replay.run(fixture)
+    return fixture, alerts[::-1]
+
+
 def apart(pts: list[dict], k: int) -> bool:
     """pts[k - 1] and pts[k] belong to different flights."""
     a, b = pts[k - 1], pts[k]
@@ -427,7 +448,7 @@ def viridis(f: float) -> list[int]:
 
 def build(rec: dict, alerts: list[dict], pts: list[dict], source: str, max_speed: float = 1200,
           gap_speed: float = 750, airport: str = "TLV", use_map: bool = False, tiles: str = TILES,
-          sources: bool = False) -> str:
+          sources: bool = False, origin: tuple | None = None) -> str:
     t0, t1 = pts[0]["t"], pts[-1]["t"]
     mine = [a for a in alerts if a["hex"] == rec["hex"] and t0 - 60 <= epoch(a["time"]) <= t1 + 60]
     if rec not in mine:
@@ -459,7 +480,8 @@ def build(rec: dict, alerts: list[dict], pts: list[dict], source: str, max_speed
     gaps = [(air[i - 1]["t"], air[i]["t"]) for i in range(1, len(air)) if air[i]["t"] - air[i - 1]["t"] > GAP]
 
     # distances in km east / north of the airport (equirectangular: fine at these ranges)
-    lat0, lon0 = fw.AIRPORTS[airport][1:] if airport in fw.AIRPORTS else (air[0]["lat"], air[0]["lon"])
+    lat0, lon0 = origin or (fw.AIRPORTS[airport][1:] if airport in fw.AIRPORTS else (air[0]["lat"], air[0]["lon"]))
+    places = {**fw.REGION_AIRPORTS, airport: (lat0, lon0)}  # an incident's own watched point too
     kx = 111.32 * math.cos(math.radians(sum(p["lat"] for p in air) / len(air)))
 
     def km(lat, lon):
@@ -557,10 +579,10 @@ def build(rec: dict, alerts: list[dict], pts: list[dict], source: str, max_speed
                f"{fw.haversine_nm(lat0, lon0, p['lat'], p['lon']) * NM:.0f} km from {airport}"
 
     if use_map:
-        view = deck_view(air, hops, mine, rec, signs, tip, tiles, focus_ll, sources, glitches)
+        view = deck_view(air, hops, mine, rec, signs, tip, tiles, focus_ll, sources, glitches, places)
     else:
         view = plotly_view(air, hops, mine, rec, signs, xr, yr, ztop, airport, title, sub, tip, km, focus_km,
-                           sources, glitches)
+                           sources, glitches, places)
 
     def iso(t):  # epoch: the page turns it into wall-clock time in the zone picked
         return t
@@ -761,7 +783,7 @@ d2.on("plotly_click", show);
 
 
 def plotly_view(air, hops, mine, rec, signs, xr, yr, ztop, airport, title, sub, tip, km, focus,
-                sources=False, glitches=()) -> dict:
+                sources=False, glitches=(), places=None) -> dict:
     """Rotatable 3D with plotly: km east / north of the airport, altitude in m."""
     def line(kind):
         x, y, z, txt = [], [], [], []
@@ -819,11 +841,12 @@ def plotly_view(air, hops, mine, rec, signs, xr, yr, ztop, airport, title, sub, 
                    "y": [p["y"] for p in air], "z": [0] * len(air),
                    "line": {"width": 2, "color": "rgba(128,128,128,0.5)"}, "hoverinfo": "skip"})
     ring = [km(la, lo) for la, lo in fw.ISRAEL + fw.ISRAEL[:1]]
-    ring = [(min(max(x, xr[0]), xr[1]), min(max(y, yr[0]), yr[1])) for x, y in ring]
-    traces.append({"type": "scatter3d", "mode": "lines", "name": "Israel (rough)",
-                   "x": [p[0] for p in ring], "y": [p[1] for p in ring], "z": [0] * len(ring),
-                   "line": {"width": 2, "color": "#888", "dash": "dot"}, "hoverinfo": "skip"})  # (green: MLAT)
-    apts = [(k, km(v[0], v[1])) for k, v in fw.REGION_AIRPORTS.items()]
+    if any(xr[0] <= x <= xr[1] and yr[0] <= y <= yr[1] for x, y in ring):  # not for incidents elsewhere
+        ring = [(min(max(x, xr[0]), xr[1]), min(max(y, yr[0]), yr[1])) for x, y in ring]
+        traces.append({"type": "scatter3d", "mode": "lines", "name": "Israel (rough)",
+                       "x": [p[0] for p in ring], "y": [p[1] for p in ring], "z": [0] * len(ring),
+                       "line": {"width": 2, "color": "#888", "dash": "dot"}, "hoverinfo": "skip"})  # (green: MLAT)
+    apts = [(k, km(v[0], v[1])) for k, v in (places or fw.REGION_AIRPORTS).items()]
     apts = [(k, (x, y)) for k, (x, y) in apts if xr[0] <= x <= xr[1] and yr[0] <= y <= yr[1]]
     if apts:
         traces.append({"type": "scatter3d", "mode": "markers+text", "name": "airports",
@@ -922,7 +945,8 @@ const retime3d = draw3d;
             "js": js}
 
 
-def deck_view(air, hops, mine, rec, signs, tip, tiles=TILES, focus=None, sources=False, glitches=()) -> dict:
+def deck_view(air, hops, mine, rec, signs, tip, tiles=TILES, focus=None, sources=False, glitches=(),
+              places=None) -> dict:
     """The same over a street map (Esri World Street Map tiles by default) with deck.gl: drag to pan,
     right-drag / Ctrl+drag to tilt and rotate. Altitude exaggerated (adjustable)."""
     t0, t1 = air[0]["t"], air[-1]["t"]
@@ -960,7 +984,7 @@ def deck_view(air, hops, mine, rec, signs, tip, tiles=TILES, focus=None, sources
     data = {"segs": segs,
             "pts": [{"p": [p["lon"], p["lat"], p["alt"] * ft], "tip": tip(p),
                      "c": [44, 160, 44] if p["src"] == "mlat" else [31, 119, 180]} for p in air],
-            "airports": [{"p": [v[1], v[0], 0], "label": k} for k, v in fw.REGION_AIRPORTS.items()],
+            "airports": [{"p": [v[1], v[0], 0], "label": k} for k, v in (places or fw.REGION_AIRPORTS).items()],
             "signs": [{"p": [air[c["start"]]["lon"], air[c["start"]]["lat"], air[c["start"]]["alt"] * ft],
                        "label": c["label"], "tip": c["text"], "first": c["first"], "glitch": c["glitch"]}
                       for c in list(signs) + list(glitches)],
@@ -1144,6 +1168,8 @@ map.setProps({onAfterRender: layoutLabels});
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--alerts", default="alerts.jsonl")
+    p.add_argument("--fixture", help="plot a replay fixture offline (tests/data/*.json.gz): its alerts are the "
+                                     "monitor's on a replay now, its positions those of the fixture")
     p.add_argument("--pick", type=int, help="alert number in the list (1 = newest)")
     p.add_argument("--filter", nargs="+", default=[], metavar="TEXT",
                    help="list only alerts whose row contains all these (any case): LY347, Zurich, RETURNED")
@@ -1163,13 +1189,29 @@ def main(argv=None):
     p.add_argument("--out", default="tmp_plot.html")
     p.add_argument("--no-open", action="store_true", help="don't open the page in a browser")
     a = p.parse_args(argv)
-    alerts = load_alerts(a.alerts)
-    if not alerts:
-        sys.exit(f"no alerts in {a.alerts}")
+    origin = None
+    if a.fixture:
+        fixture, alerts = replay_alerts(a.fixture)
+        meta = fixture["meta"]
+        alerts = [x for x in alerts if x["hex"] in fixture["aircraft"]]
+        if not alerts:
+            sys.exit(f"no alerts on a replay of {a.fixture}")
+        if not a.filter and a.pick is None:  # the incident aircraft's first alert (the list is newest first)
+            a.pick = max((i for i, x in enumerate(alerts, 1) if x["hex"] in meta["focus"]), default=len(alerts))
+        if "--airport" not in (argv if argv is not None else sys.argv[1:]):
+            a.airport = meta["airport"]
+        origin = tuple(meta["airport_coords"]) if "airport_coords" in meta else None
+    else:
+        alerts = load_alerts(a.alerts)
+        if not alerts:
+            sys.exit(f"no alerts in {a.alerts}")
     rec = choose(alerts, a.pick, a.filter)
     t = epoch(rec["time"])
-    print(f"fetching trace of {rec['hex']} ...", file=sys.stderr)
-    pts, source = trace_for(rec["hex"], t)
+    if a.fixture:
+        pts, source = fixture_points(fixture, rec["hex"]), meta["source"]
+    else:
+        print(f"fetching trace of {rec['hex']} ...", file=sys.stderr)
+        pts, source = trace_for(rec["hex"], t)
     if pts and pts[-1]["t"] < t:
         print(f"warning: the trace ends at {local(pts[-1]['t'])}, before the alert ({local(t)}); "
               "adsb.lol publishes the full trace with a delay - try again in ~30 min", file=sys.stderr)
@@ -1181,7 +1223,7 @@ def main(argv=None):
         sys.exit("no positions found around the alert time")
     with open(a.out, "w", encoding="utf-8") as f:
         f.write(build(rec, alerts, pts, source, a.max_speed, a.max_gap_speed, a.airport, a.map, a.tiles,
-                      a.sources))
+                      a.sources, origin))
     print(f"wrote {a.out} ({len(pts)} positions, {source})")
     if not a.no_open:
         webbrowser.open("file://" + os.path.abspath(a.out))

@@ -124,7 +124,12 @@ def load(path: str = DEFAULT_FIXTURE) -> dict:
 def run(fixture: dict, argv=(), warmup: float = 300) -> tuple[list[dict], fw.Monitor, ReplayFeed]:
     """Replay the fixture window; returns (alerts, monitor, feed)."""
     meta = fixture["meta"]
-    args = fw.parse_args(["--airport", meta["airport"], "--radius", str(meta["radius"]),
+    where = []  # an incident far from the known airports is watched from its own point
+    if "airport_coords" in meta:
+        where = ["--lat", str(meta["airport_coords"][0]), "--lon", str(meta["airport_coords"][1])]
+    if "icao" in meta:
+        where += ["--icao", meta["icao"]]
+    args = fw.parse_args(["--airport", meta["airport"], *where, "--radius", str(meta["radius"]),
                           "--jsonl", "", "--posts", "", "--telegram-posts", "", "--rate", "60", "--rate-max", "600",
                           *argv])
     clock = Clock(meta["start"] - warmup)

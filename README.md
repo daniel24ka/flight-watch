@@ -13,8 +13,8 @@ turning back, diversions, and flights not bound for Israel turning toward it.
 | `EMERGENCY` | squawk 7500/7600/7700 set or changed, or an ADS-B emergency status | 5 |
 | `TOWARD_ISRAEL` | a flight not bound for Israel turns >= 45 deg so that Israeli airspace is <= 12 min ahead (or is about to enter it), above 8000 ft | 5 |
 | `OFF_COURSE` | a TLV arrival > 60 nm out flies >= 100 deg away from TLV for 150 s, distance opening; also any flight with a known route flying away from its destination | 5 |
-| `LOST_CONTACT` / `DIVERSION` | silent too long; a TLV arrival on the ground elsewhere, or silent while descending near another airport | 5 |
-| `TURNING_BACK` / `RETURNED` | a TLV departure heads back toward TLV for 150 s while closing / lands back | 4 |
+| `LOST_CONTACT` / `DIVERSION` | silent too long (also low down, when last heard falling at `--vrate` or faster); a TLV arrival on the ground elsewhere, or silent while descending near another airport | 5 |
+| `TURNING_BACK` / `RETURNED` | a TLV departure heads back toward TLV for 150 s while closing / lands back after reaching 40 nm or 10,000 ft | 4 |
 | `VERTICAL_RATE` | flight-path angle steeper than 10 deg descending or 12 deg climbing (18 deg climbing near airports), or > 8000 ft/min | 4 |
 | `SHARP_TURN` | turn tighter than ~35 deg of bank (airliners stay below ~25-30), anywhere, also near airports | 4 |
 | `COURSE_CHANGE` | >= 70 deg in 2 min above 12000 ft, new track held 2 min - not S-turns, holding patterns / orbits, routine turns near airports or learned route corners | 4 |
@@ -198,17 +198,58 @@ can be checked against what actually happened:
 - `fz1073_2026-09-30.json.gz` - FZ1073 (A6-FKF, DXB->TLV) over Jordan, 05:00-06:15 UTC: sudden
   descent from FL340, 8.5 min silence, squawk 7700 then 7500, U-turn 130 nm from TLV, lost heading
   south-east. 161 other aircraft (150 nm circle + flights to/from TLV) for false-alarm counting.
+- `fr4978_2021-05-23.json.gz` - Ryanair FR4978 (RYR1TZ, SP-RSM, Athens->Vilnius) forced to land at
+  Minsk: squawk 7700 over Belarus, U-turn, off course, 9 min silent in the descent. 55 other aircraft
+  within 150 nm of Vilnius. Expected: EMERGENCY, COURSE_CHANGE, OFF_COURSE, LOST_CONTACT, DIVERSION.
+- `as1282_2024-01-06.json.gz` - Alaska AS1282 (N704AL) door plug blown out at 16,000 ft after
+  leaving Portland, back on the ground 13 min later; no emergency squawk in ADS-B and never more than
+  29 nm out, so RETURNED on landing is the only alert. 75 other aircraft within 60 nm.
+- `mu5735_2022-03-21.json.gz` - China Eastern MU5735 (B-1791) dive from FL291, from Flightradar24's
+  published granular data (no ADS-B Exchange coverage there; imported with `tools/import_track.py`).
+  Expected: VERTICAL_RATE, and LOST_CONTACT although the last report is at 3,225 ft.
+
+Incidents away from TLV are watched from their own point (`airport_coords` in the fixture's
+`meta`, passed to the monitor as `--lat` / `--lon`); the Israel-only checks are off there.
 
 ```bash
 python tests/replay.py                          # alert timeline (* = the incident aircraft)
 python tests/replay.py --descent-angle 8 --max-bank 30   # try other thresholds (any option)
+python tests/replay.py tests/data/fr4978_2021-05-23.json.gz   # another incident
 ```
 
-`tests/test_replay_fz1073.py` requires the incident's alerts and caps alerts on the other
-flights (`NOISE_BUDGET`). Capture another incident with `tools/capture_incident.py` (see its
-`--help`); it uses the ADS-B Exchange globe history. Board rows are derived from the traces plus
-`--board` rows given by hand; the board as it was on a past day (since 10 Apr 2026) is in the
-over.org.il archive (see Flight pages) and could replace the hand-written rows.
+`tests/test_replay_fz1073.py` and `tests/test_replay_incidents.py` require the incidents' alerts and
+cap alerts on the other flights (`NOISE_BUDGET`).
+
+**Capture** another incident with `tools/capture_incident.py` (see its `--help`); it uses the ADS-B
+Exchange globe history (5 s positions worldwide since May 2020; earlier days answer 404), so it brings
+the surrounding traffic too. Board rows are derived from the traces plus `--board` rows given by hand;
+the board as it was on a past day (since 10 Apr 2026) is in the over.org.il archive (see Flight pages)
+and could replace the hand-written rows. Elsewhere than at a known airport, give the watched point
+(`--airport VNO --icao EYVI --lat 54.6341 --lon 25.2858`), not where the aircraft came down: losses
+near the "airport" read as landings. `--find RYR1TZ` lists the hex ids that sent a callsign in the
+window. Routes come from today's route data and callsigns are reused (RYR1TZ is Brussels-Rome now):
+give the incident flight's route of the day with `--route RYR1TZ=LGAV-EYVI`.
+
+```bash
+python tools/capture_incident.py --date 2021-05-23 --start 09:00 --end 10:30 --find RYR1TZ
+python tools/capture_incident.py --date 2021-05-23 --start 09:35 --end 10:20 --airport VNO --icao EYVI \
+    --lat 54.6341 --lon 25.2858 --before-h 0.5 --after-h 0.5 --focus 48c22c \
+    --route RYR1TZ=LGAV-EYVI --name "FR4978 ..." --out tests/data/fr4978_2021-05-23.json.gz
+```
+
+**Import** one aircraft's track from a file with `tools/import_track.py`, for what ADS-B Exchange does
+not have (before 2020, no receivers there, data others published): Flightradar24's granular or
+downloaded CSV, KML (gx:Track or time-stamped placemarks, e.g. FlightAware's export), or any CSV with
+time, lat, lon and optionally altitude, speed, track, vertical rate, squawk, callsign. Missing speeds,
+tracks and rates are worked out from the positions (radar plots have none); a transponder switched
+off is where the points stop. `--add-to` puts several aircraft in one fixture (e.g. four flights of
+one day). Only the incident aircraft is in such a fixture, so it tests detection, not false alarms.
+
+```bash
+python tools/import_track.py granular.csv --name "MU5735 ..." --reg B-1791 --type B738 \
+    --route ZPPP-ZGGG --out tests/data/mu5735_2022-03-21.json.gz
+python tools/import_track.py radar_ua175.csv --callsign UAL175 --add-to tests/data/some_day.json.gz
+```
 
 ## Plot an alert
 
@@ -219,7 +260,12 @@ python tools/plot_alert.py --filter RETURNED Zurich
 python tools/plot_alert.py --pick 1 --minutes 120   # 2 h around the alert, across landings and gaps
 python tools/plot_alert.py --pick 1 --map        # over a street map instead of km axes
 python tools/plot_alert.py --pick 1 --sources    # GPS (ADS-B) and MLAT positions as two lines
+python tools/plot_alert.py --fixture tests/data/fr4978_2021-05-23.json.gz --map   # an incident, offline
 ```
+
+With `--fixture` nothing is fetched: the fixture is replayed through the monitor, its alerts are
+listed (the incident aircraft's first one is plotted unless `--pick` / `--filter` say otherwise) and
+the positions come from the fixture; the km axes are measured from its watched point.
 
 Fetches the aircraft's full-rate trace (adsb.lol for the last day, plus its "recent" trace for the
 latest minutes, else the ADS-B Exchange history of that UTC day) and writes `tmp_plot.html`

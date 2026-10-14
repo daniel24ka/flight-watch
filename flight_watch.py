@@ -144,6 +144,8 @@ REGION_AIRPORTS = {
     "AJF": (29.7851, 40.1000, False), "MED": (24.5534, 39.7051, False), "ALP": (36.1807, 37.2244, False),
     "LTK": (35.4011, 35.9487, False), "AYT": (36.8987, 30.8005, False), "ADA": (36.9822, 35.2804, False),
 }
+# a departure that climbed this high and landed back home is RETURNED however close it stayed
+RETURN_MIN_ALT = 10000
 # conditions that last while a flight keeps flying the same way: repeated every --repeat-minutes, not
 # every --cooldown (6 Oct 2026: one tanker over Israel for 75 min gave 15 TOWARD_ISRAEL alerts)
 PERSISTING = {"TOWARD_ISRAEL", "OFF_COURSE", "TURNING_BACK"}
@@ -637,6 +639,7 @@ class Track:
     follow_why: str = ""     # "airport" (a TLV arrival / departure), or the kind of its first alert
     was_airborne: bool = False
     max_dist: float = 0.0
+    max_alt: int = 0         # highest altitude of the leg, ft (RETURNED after a climb, not a circuit)
     sched: SchedFlight | None = None
     alerted: dict = field(default_factory=dict)      # key -> (time, severity)
     squawk: str = ""
@@ -1574,6 +1577,7 @@ class Monitor:
                 return
             log.info("%s is now %s: a new leg", t.label(), new)
             t.sched, t.route_dir, t.was_airborne, t.max_dist, t.leg_start = None, 0, False, 0.0, now
+            t.max_alt = 0
         t.callsign, t.cs_pending = new, None
 
     def check_track(self, t: Track, prev: Sample | None, ac: dict, spoofed: str, server_now: float) -> None:
@@ -1625,11 +1629,12 @@ class Monitor:
         if not s.on_ground:
             t.was_airborne = True
             t.max_dist = max(t.max_dist, d)
+            t.max_alt = max(t.max_alt, s.alt or 0)
         elif t.was_airborne and (s.gs is None or s.gs < 50):
             # Landed (at taxi speed, so not a stray "ground" reading in flight): the leg is
             # over. Otherwise its next flight inherits it - an arrival turning around as a
             # departure was reported as RETURNED (LOT7MA -> LOT4CG at TLV, 6 Oct 2026).
-            t.was_airborne, t.max_dist, t.route_dir = False, 0.0, 0
+            t.was_airborne, t.max_dist, t.route_dir, t.max_alt = False, 0.0, 0, 0
 
     # ---- an aircraft's recent trace: what our polls missed
     def recent_trace(self, t: Track) -> list[tuple[Sample, dict]] | None:
@@ -2086,9 +2091,11 @@ class Monitor:
             at = f" ({ad:.0f} nm from {apt})" if ad < 20 else ""
             self.alert(t, "DIVERSION", f"{self.args.airport} arrival on the ground "
                        f"{d:.0f} nm away at {s.lat:.4f},{s.lon:.4f}{at}")
-        elif kind == "DEP" and d < 15 and t.max_dist > 40:
+        elif kind == "DEP" and d < 15 and (t.max_dist > 40 or t.max_alt >= RETURN_MIN_ALT):
+            # Far out, or high: AS1282 (door plug, 6 Jan 2024) climbed to 16,000 ft and landed back
+            # 29 nm out at most - too close for TURNING_BACK (--off-course-min-dist) and for 40 nm.
             self.alert(t, "RETURNED", f"{self.args.airport} departure landed back at "
-                       f"{self.args.airport} (had reached {t.max_dist:.0f} nm)")
+                       f"{self.args.airport} (had reached {t.max_dist:.0f} nm, {t.max_alt} ft)")
 
     def check_destination(self, t: Track, kind: str, d: float) -> None:
         """Long before landing: an arrival flying away from the airport, or a departure flying back.
@@ -2273,7 +2280,8 @@ class Monitor:
             silent = (t.last_query if remote else now) - t.last_msg
             kind = self.classify(t)[0]
             apt, ad = nearest_airport(s.lat, s.lon, exclude=(a.airport,))
-            if (s.alt or 0) < a.lost_min_alt:
+            plunging = self.plunging(t)
+            if (s.alt or 0) < a.lost_min_alt and not plunging:
                 # A TLV arrival vanishing low and far from TLV is most likely landing elsewhere
                 # (low-altitude coverage is poor, so we may never see it on the ground).
                 if (t.followed and d > 30 and (s.vrate or 0) <= 0
@@ -2295,7 +2303,7 @@ class Monitor:
                     continue  # unfollowed aircraft simply leaving the local circle
                 limit = a.lost_after_remote
             else:
-                if d < a.lost_ignore_radius:
+                if d < a.lost_ignore_radius and not plunging:
                     continue  # landing at the airport
                 limit = a.lost_after
             if silent < limit:
@@ -2313,7 +2321,9 @@ class Monitor:
             trk = f"{s.track:.0f}" if s.track is not None else "?"
             where = (f"last {s.alt} ft, {d:.0f} nm from {a.airport}, track {trk} deg, "
                      f"at {s.lat:.4f},{s.lon:.4f}")
-            descending = (s.vrate or 0) <= 0
+            descending = (s.vrate or 0) <= 0 and not plunging  # a landing descent, not a fall
+            if plunging:
+                where += f", falling {s.vrate} ft/min"
             fake = self.fake_place(t, s)
             if (s.alt or 0) < 12000 and descending and ad <= 30 and fake:
                 t.lost_alerted = False
@@ -2338,6 +2348,17 @@ class Monitor:
             # (not alerted - e.g. part of a spoofing episode - means no "restored" later either)
             also = "; the feed's own trace ends there too" if heard is False else ""
             t.lost_alerted = self.alert(t, "LOST_CONTACT", f"silent {silent:.0f}s; {where}{also}")
+
+    def plunging(self, t: Track) -> bool:
+        """Last heard falling at --vrate or faster, backed by the altitude lost since the report before:
+        silence then is a crash, not a landing nor low-level coverage (MU5735, 21 Mar 2022: last report
+        3,225 ft at -31,000 ft/min, below --lost-min-alt and so never a LOST_CONTACT)."""
+        s, a = t.last, self.args
+        if s.vrate is None or s.vrate > -a.vrate or s.alt is None or len(t.samples) < 2:
+            return False
+        p = t.samples[-2]
+        dt = s.t - p.t
+        return p.alt is not None and 0 < dt <= 90 and (s.alt - p.alt) / dt * 60 <= -a.vrate / 2
 
     def wait_or_group(self, t: Track, now: float) -> bool:
         """True when a loss of contact is not (yet) alerted: within --lost-confirm of reaching the
