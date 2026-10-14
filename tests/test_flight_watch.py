@@ -1132,6 +1132,30 @@ class LostContactTests(unittest.TestCase):
         self.assertEqual(len(hits), 1, kinds(alerts))
         self.assertIn("landing at AMM", hits[0]["message"])
 
+    def plunge_and_vanish(self, alts, last_rate):
+        mon, feed, clock, alerts = make(["--no-routes"])
+        feed.local.add("999999")
+        feed.aircraft["999999"] = airborne(31.0, 34.0, 20000, flight="KEEP1")
+        states = path(31.72, 35.70, [90] * len(alts), alts, gs=300)  # near Amman, as above
+        states[-1]["baro_rate"] = last_rate
+        fly(mon, feed, clock, "740200", states, flight="RJA200", r="JY-AYC")
+        feed.local.discard("740200")
+        del feed.aircraft["740200"]
+        for _ in range(12):
+            step(mon, clock)
+        return alerts
+
+    def test_silent_falling_low_is_lost_contact_not_a_landing(self):
+        """MU5735 (21 Mar 2022): last heard at 3,225 ft falling 31,000 ft/min - below --lost-min-alt."""
+        alerts = self.plunge_and_vanish([12000, 9500, 7000, 4500, 2500], -12000)
+        hits = [a for a in alerts if a["kind"] == "LOST_CONTACT"]
+        self.assertEqual(len(hits), 1, kinds(alerts))
+        self.assertIn("falling -12000 ft/min", hits[0]["message"])
+
+    def test_one_bad_rate_at_the_end_of_a_normal_descent_is_not_a_fall(self):
+        alerts = self.plunge_and_vanish([4500, 4300, 4100, 3900, 3700], -12000)
+        self.assertNotIn("LOST_CONTACT", kinds(alerts))
+
     def remote_silence(self, hot):
         mon, feed, clock, alerts = make(["--no-routes", "--rate", "60"])
         feed.local = {"999999"}

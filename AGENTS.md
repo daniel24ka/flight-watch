@@ -142,7 +142,11 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
 - **LOST_CONTACT**: silent ≥ `--lost-after` (60 s) locally, `--lost-after-remote` (600 s)
   for followed flights outside the circle, where coverage has large gaps. Ignored below
   `--lost-min-alt`, near the airport (landing), and near the circle edge for unfollowed
-  aircraft (simply leaving coverage). Skipped entirely after our own outage or when the
+  aircraft (simply leaving coverage) - except when last heard falling (`Monitor.plunging`: reported
+  rate <= -`--vrate`, backed by the altitude lost since the report before): that is a crash, not a
+  landing nor low coverage, and none of the landing rules apply. MU5735 (21 Mar 2022, replay) was
+  last heard at 3,225 ft falling 31,000 ft/min and gave no LOST_CONTACT before.
+  Skipped entirely after our own outage or when the
   feed suddenly returns far fewer aircraft (feed glitch, not mass disappearance).
   Before alerting, the aircraft's recent trace is read (`backfill`): reports our polls missed (HTTP 429,
   between polls) go through every check at their own time (alerts marked `from_trace`, "[from the feed's
@@ -155,7 +159,10 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   other flights were 20-40 min gaps over the Saudi/Iraqi desert and the sea.
 - **DIVERSION**: a TLV arrival on the ground far from TLV, **or** going silent while
   descending low and far away (low-altitude coverage is poor, so the landing is often
-  never seen). **RETURNED**: a TLV departure landing back at TLV after leaving.
+  never seen). **RETURNED**: a TLV departure landing back at TLV after reaching 40 nm or
+  `RETURN_MIN_ALT` (10,000 ft): AS1282 (door plug, 6 Jan 2024, replay) climbed to 16,000 ft and landed
+  back at Portland never more than 29 nm out, inside `--off-course-min-dist` (60 nm), so neither
+  TURNING_BACK nor the 40 nm rule saw it, and it squawked nothing.
   A landing (on the ground at taxi speed) ends the leg: `was_airborne`, `max_dist` and the
   learned route direction reset. Before this, an arrival parked overnight and given its morning
   departure's callsign (LOT7MA -> LOT4CG) was RETURNED: 70 false alarms in one night (6 Oct 2026),
@@ -372,6 +379,16 @@ Incident replays (`tests/replay.py`) serve captured real traffic the same way. K
   at 05:45 and LOST_CONTACT. The dive-not-suppressed property has a synthetic unit test.
 - **429 handling**: rate-limited responses back off without stopping the local poll and
   without permanently marking a provider or endpoint as unsupported.
+- **Incidents elsewhere** (`tests/test_replay_incidents.py`): FR4978 forced to Minsk (2021, ADS-B
+  Exchange, 56 aircraft), AS1282 door plug (2024, 76 aircraft), MU5735 dive (2022, Flightradar24's
+  published data, the aircraft alone). Watched from a point near each (`airport_coords` -> `--lat` /
+  `--lon`; the Israel-only checks are off). ADS-B Exchange's history starts in May 2020 (404 before)
+  and had nothing of MU5735 over China nor of AZAL 8243 after 04:16 UTC over Dagestan; older or
+  uncovered incidents come in through `tools/import_track.py` (one aircraft from a CSV / KML; no
+  surrounding traffic, so detection only). Route data is today's and callsigns are reused: a captured
+  incident keeps its flight's route of the day in `meta.route_overrides`. Pre-ADS-B incidents (e.g.
+  9/11: NTSB flight path studies and FAA radar records at the National Archives) would be radar
+  plots without speeds, and transponders switched off show as the end of the points.
 
 Quick live check: `python flight_watch.py --once -v`. Keep live experiments short.
 A local `standing-data/` checkout is used when present (tests pin `--standing-data` to the URL so

@@ -15,6 +15,12 @@ The flight board of that day is no longer online, so board rows are derived from
 (arrival/departure = the aircraft was on the ground at the airport after/before the window) plus
 any --board rows given by hand (e.g. a flight that never arrived).
 
+An incident away from the known airports is watched from its own point: --airport takes any code
+then, with --lat / --lon (the replay polls the circle around it). Keep that point some distance from
+where the aircraft came down: losses of contact near the "airport" read as landings.
+--find CALLSIGN lists the aircraft that sent a callsign in the window (from the heatmaps), to get
+the hex for --focus.
+
 Example (FZ1073 squawking 7700/7500 and turning back over Jordan):
   python tools/capture_incident.py --date 2026-09-30 --start 05:00 --end 06:15 \\
       --focus 8965d1 --board "FDB1073:A:DXB:2026-09-30T08:55" \\
@@ -72,8 +78,10 @@ def get(url: str, cache: str | None = None) -> bytes:
     return data
 
 
-def heatmap(day: datetime, n: int, cache_dir: str):
-    """Yield (epoch, hex, lat, lon, alt_raw) for ICAO-addressed positions in half-hour file n."""
+def heatmap(day: datetime, n: int, cache_dir: str, callsigns: dict | None = None):
+    """Yield (epoch, hex, lat, lon, alt_raw) for ICAO-addressed positions in half-hour file n.
+
+    Callsign entries (bytes 8-16 of an entry flagged in bit 30) go to `callsigns` (callsign -> {hex})."""
     d = get(f"{BASE}/{day:%Y/%m/%d}/heatmap/{n:02d}.bin.ttf",
             os.path.join(cache_dir, f"heatmap_{day:%Y%m%d}_{n:02d}.bin"))
     ts = None
@@ -82,6 +90,9 @@ def heatmap(day: datetime, n: int, cache_dir: str):
         if h == MAGIC:
             ts = (a * 2 ** 32 + (b & 0xFFFFFFFF)) / 1000
             continue
+        if a & (1 << 30) and callsigns is not None and not h >> 24:
+            cs = d[i * 16 + 8:i * 16 + 16].decode("ascii", "replace").strip()
+            callsigns.setdefault(cs, set()).add(f"{h & 0xFFFFFF:06x}")
         if ts is None or a & (1 << 30) or h >> 24:  # callsign entry / non-ICAO address
             continue
         alt = struct.unpack("<h", struct.pack("<H", x & 0xFFFF))[0]
@@ -173,16 +184,21 @@ def legs(tr: dict, lat0: float, lon0: float, t0: float, t1: float) -> list[tuple
     return out
 
 
-def attach_routes(fixture: dict, source: str = fw.STANDING_DATA) -> None:
+def attach_routes(fixture: dict, source: str = fw.STANDING_DATA, overrides: dict | None = None) -> None:
     """Add the VRS standing-data route of every callsign in the fixture, plus the positions of the
-    airports on those routes, so replays classify traffic offline like flight_watch does live."""
+    airports on those routes, so replays classify traffic offline like flight_watch does live.
+
+    The data is today's: callsigns are reused, so an old incident's own flight may need its route
+    given by hand (`overrides`, callsign -> "ICAO-ICAO"; RYR1TZ was Athens-Vilnius on 23 May 2021,
+    Brussels-Rome in the data of Oct 2026). Overrides are kept in meta["route_overrides"]."""
     import requests
     sd = fw.StandingData(fw.Http(min_gap=0.1, rate=6000, rate_max=6000), source)
     callsigns = {p[7] for a in fixture["aircraft"].values() for p in a["points"] if p[7]}
+    overrides = {**fixture["meta"].get("route_overrides", {}), **(overrides or {})}
     routes, airports = {}, {}
-    for cs in sorted(callsigns):
+    for cs in sorted(callsigns | set(overrides)):
         try:
-            codes = sd.route(cs)
+            codes = overrides[cs].split("-") if cs in overrides else sd.route(cs)
             if codes:
                 routes[cs] = "-".join(codes)
                 for icao in codes:
@@ -193,6 +209,8 @@ def attach_routes(fixture: dict, source: str = fw.STANDING_DATA) -> None:
         except requests.RequestException as e:
             print(f"  route of {cs} not fetched: {e}", file=sys.stderr)
     fixture["routes"], fixture["airports"] = routes, airports
+    if overrides:
+        fixture["meta"]["route_overrides"] = overrides
     fixture["meta"]["routes_source"] = "VRS standing data (CC0), " + source
     print(f"routes: {len(routes)} of {len(callsigns)} callsigns, {len(airports)} airports", file=sys.stderr)
 
@@ -202,7 +220,14 @@ def main() -> None:
     p.add_argument("--date", help="UTC date, YYYY-MM-DD")
     p.add_argument("--start", help="UTC window start, HH:MM")
     p.add_argument("--end", help="UTC window end, HH:MM")
-    p.add_argument("--airport", default="TLV")
+    p.add_argument("--airport", default="TLV", help="a known airport, or any code with --lat / --lon")
+    p.add_argument("--lat", type=float, help="latitude of the watched point (airport not known)")
+    p.add_argument("--lon", type=float, help="longitude of the watched point")
+    p.add_argument("--icao", help="ICAO code of the watched airport (with --lat / --lon), for routes")
+    p.add_argument("--route", action="append", default=[], metavar="CALLSIGN=ICAO-ICAO",
+                   help="the route a callsign flew that day, when the route data has changed since")
+    p.add_argument("--find", metavar="CALLSIGN", action="append", default=[],
+                   help="only list the hex ids that sent this callsign in the window (repeatable)")
     p.add_argument("--radius", type=float, default=150)
     p.add_argument("--before-h", type=float, default=3, help="hours before the window to look for departures")
     p.add_argument("--after-h", type=float, default=6, help="hours after the window to look for arrivals")
@@ -221,17 +246,30 @@ def main() -> None:
     if a.add_routes:
         with gzip.open(a.add_routes, "rt", encoding="utf-8") as f:
             fixture = json.load(f)
-        attach_routes(fixture, a.standing_data)
+        attach_routes(fixture, a.standing_data, dict(r.upper().split("=", 1) for r in a.route))
         with gzip.open(a.add_routes, "wt", encoding="utf-8") as f:
             json.dump(fixture, f, separators=(",", ":"))
         return
-    if not (a.out and a.date and a.start and a.end):
-        p.error("--date, --start, --end and --out are required (or use --add-routes)")
+    if not (a.date and a.start and a.end and (a.out or a.find)):
+        p.error("--date, --start, --end and --out (or --find) are required (or use --add-routes)")
 
-    _, lat0, lon0 = fw.AIRPORTS[a.airport]
     day = datetime.strptime(a.date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     t0 = (day + timedelta(hours=int(a.start[:2]), minutes=int(a.start[3:]))).timestamp()
     t1 = (day + timedelta(hours=int(a.end[:2]), minutes=int(a.end[3:]))).timestamp()
+    if a.find:
+        seen: dict = {}
+        for n in range(int((t0 - day.timestamp()) // 1800), min(47, int((t1 - day.timestamp()) // 1800)) + 1):
+            for _ in heatmap(day, n, a.cache, seen):
+                pass
+        for cs in a.find:
+            print(f"{cs}: {', '.join(sorted(seen.get(cs.upper(), ()))) or 'not seen'}")
+        return
+    if a.lat is not None and a.lon is not None:
+        lat0, lon0 = a.lat, a.lon
+    elif a.airport in fw.AIRPORTS:
+        _, lat0, lon0 = fw.AIRPORTS[a.airport]
+    else:
+        p.error(f"unknown airport {a.airport}: pass --lat and --lon")
     tz = ZoneInfo("Asia/Jerusalem")
 
     # 1) pick aircraft from the heatmaps (same UTC day only)
@@ -294,6 +332,8 @@ def main() -> None:
     fixture = {
         "meta": {"name": a.name, "airport": a.airport, "date": a.date, "start": t0, "end": t1,
                  "radius": a.radius, "focus": a.focus, "step": a.step,
+                 **({"airport_coords": [lat0, lon0]} if a.airport not in fw.AIRPORTS else {}),
+                 **({"icao": a.icao.upper()} if a.icao else {}),
                  "source": "ADS-B Exchange globe history (heatmap + trace_full)",
                  "board_note": "derived from traces and --board rows, not the real flight board",
                  "point_fields": ["t", "lat", "lon", "alt", "gs", "track", "vrate",
@@ -301,7 +341,7 @@ def main() -> None:
         "board": records,
         "aircraft": aircraft,
     }
-    attach_routes(fixture, a.standing_data)
+    attach_routes(fixture, a.standing_data, dict(r.upper().split("=", 1) for r in a.route))
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     with gzip.open(a.out, "wt", encoding="utf-8") as f:
         json.dump(fixture, f, separators=(",", ":"))
