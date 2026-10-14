@@ -15,6 +15,12 @@ other aircraft today - lower it as tuning improves, never raise it casually.
 - MU5735 (CES5735, B-1791, Kunming -> Guangzhou), 21 Mar 2022, Flightradar24's granular data
   (ADS-B Exchange had no coverage there), imported with tools/import_track.py: dive from FL291 at
   06:20 UTC, last report 3,225 ft falling 31,000 ft/min.
+- AA77 and UA93, 11 Sep 2001, from 911maps.kmz (11-septembre.com) with tools/import_911.py: the flight
+  recorder path (1 point a second, with altitude), timed by FAA / NEADS radar returns, as if the
+  transponder had stayed on (it was switched off: AA77 08:55, UA93 09:40 EDT). Watched from Dulles and
+  Pittsburgh. AA77's final 330 deg descending turn into the Pentagon gives nothing (circling, 2,000-
+  4,700 ft/min), and a cut at the switch-off gives nothing either: silent 242 nm from Dulles, at the
+  circle's edge.
 """
 import os
 import sys
@@ -105,6 +111,26 @@ class MU5735Replay(Incident, unittest.TestCase):
     def test_lost_falling_below_lost_min_alt(self):
         a = self.first("LOST_CONTACT", "06:22:00", "06:24:00", "falling")
         self.assertLess(a["alt"], 5000)
+
+
+
+class AA77Replay(Incident, unittest.TestCase):
+    FIXTURE, DATE = "aa77_2001-09-11.json.gz", "2001-09-11"
+
+    def test_turning_back_to_dulles(self):
+        self.first("COURSE_CHANGE", "12:58:00", "13:02:00")
+        self.first("TURNING_BACK", "12:58:00", "13:02:00")
+
+
+class UA93Replay(Incident, unittest.TestCase):
+    FIXTURE, DATE = "ua93_2001-09-11.json.gz", "2001-09-11"
+
+    def test_u_turn_near_cleveland(self):
+        self.first("COURSE_CHANGE", "13:38:00", "13:42:00")
+
+    def test_final_dive(self):
+        self.first("VERTICAL_RATE", "14:02:30", "14:03:11", "DESCENT")
+        self.first("LOST_CONTACT", "14:03:00", "14:05:00", "falling")
 
 
 if __name__ == "__main__":

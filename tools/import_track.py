@@ -51,7 +51,7 @@ NAMES = {  # generic CSV: column -> our field (lower case, spaces / units stripp
     "alt": "alt", "altitude": "alt", "alt_baro": "alt", "gs": "gs", "speed": "gs", "groundspeed": "gs",
     "track": "track", "heading": "track", "direction": "track", "course": "track",
     "vrate": "vrate", "vspeed": "vrate", "vs": "vrate", "baro_rate": "vrate", "verticalrate": "vrate",
-    "squawk": "squawk", "callsign": "flight", "flight": "flight",
+    "squawk": "squawk", "callsign": "flight", "flight": "flight", "hex": "hex", "icao": "hex", "icao24": "hex",
 }
 
 
@@ -104,18 +104,20 @@ def read_csv(rows: list[list[str]], alt_unit: str) -> tuple[list[dict], dict]:
             cols[NAMES[key]] = i
     if not {"t", "lat", "lon"} <= set(cols):
         sys.exit(f"the CSV header needs time, lat and lon columns (has: {', '.join(rows[0])})")
-    pts = []
+    pts, info = [], {}
     for r in rows[1:]:
         get = {k: (r[i].strip() if i < len(r) else "") for k, i in cols.items()}
         if not get["lat"] or not get["lon"] or not get["t"]:
             continue
+        if get.get("hex"):
+            info.setdefault("hex", get["hex"].lower().removeprefix("0x"))
         alt = num(get.get("alt"))
         if alt is not None and alt_unit == "m":
             alt *= FT_PER_M
         pts.append({"t": when(get["t"]), "lat": float(get["lat"]), "lon": float(get["lon"]), "alt": alt,
                     "gs": num(get.get("gs")), "track": num(get.get("track")), "vrate": num(get.get("vrate")),
                     "squawk": get.get("squawk") or None, "flight": get.get("flight") or None})
-    return pts, {}
+    return pts, info
 
 
 def read_kml(text: str) -> tuple[list[dict], dict]:
@@ -151,7 +153,20 @@ def read(path: str, kind: str, alt_unit: str) -> tuple[list[dict], dict, str]:
     else:
         rows = [r for r in csv.reader(io.StringIO(text)) if r]
         pts, info = {"fr24": read_fr24, "fr24-basic": read_fr24_basic}.get(kind, lambda r: read_csv(r, alt_unit))(rows)
+    # 0,0 is "no position" in some exports (FR24's JT610 CSV: 37 of 836 rows), not a place in the
+    # Gulf of Guinea: the map drew jumps there and back across the world
+    pts = [p for p in pts if (p["lat"], p["lon"]) != (0, 0)]
     pts = sorted({p["t"]: p for p in pts}.values(), key=lambda p: p["t"])  # one report per time
+    # an exact earlier position again after the aircraft had moved on is an old one re-sent with a new
+    # time (JT610: one point 11 times over 46 s), not a jump back: drawn as spikes, alerted as a jump
+    seen, kept = set(), []
+    for p in pts:
+        at = (p["lat"], p["lon"])
+        if at in seen and (not kept or at != (kept[-1]["lat"], kept[-1]["lon"])):
+            continue
+        seen.add(at)
+        kept.append(p)
+    pts = kept
     return pts, info, kind
 
 

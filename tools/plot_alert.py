@@ -66,6 +66,8 @@ GROUPS = [
     ("gps", "position jump / GPS", "#e67e00", "x", "✕", {"POSITION_JUMP", "GPS_SPOOFING", "GPS_DEGRADED"}),
     ("contact", "lost / restored contact", "#7f7f7f", "circle-open", "○",
      {"LOST_CONTACT", "CONTACT_RESTORED", "MASS_SILENCE"}),
+    # not an alert: an event of the incident kept in the fixture's meta (import_911.py)
+    ("event", "transponder switched off", "#000000", "circle", "⊘", {"TRANSPONDER_OFF"}),
     ("other", "other", "#17becf", "circle", "●", set()),
 ]
 GROUP_OF = {k: g[0] for g in GROUPS for k in g[5]}
@@ -657,13 +659,17 @@ def build(rec: dict, alerts: list[dict], pts: list[dict], source: str, max_speed
 <script src="{PLOTLY}"></script>{view["head"]}
 <style>html,body{{overflow-x:hidden}} body{{font-family:sans-serif;margin:8px;background:#fff}} a{{margin-right:1em}}
 h1{{font-size:18px;margin:4px 0}} .sub{{font-size:13px;color:#444;margin-bottom:6px}}
-#d3{{position:relative}} .legend{{font-size:12px;margin:4px 0}} .legend span{{margin-right:14px}}
+#d3{{position:relative;background:linear-gradient(#b9d3ea,#eef4fa 60%)}} .legend{{font-size:12px;margin:4px 0}} .legend span{{margin-right:14px}}
 .credits{{font-size:11px;color:#666;margin:6px 0}} .credits a{{margin-right:0}}
 .menu{{display:inline-block;position:relative;margin-left:8px}} .menu summary{{cursor:pointer;border:1px solid #bbb;
 border-radius:4px;padding:1px 8px;background:#f6f6f6}} .menubody{{position:absolute;z-index:20;background:#fff;
 border:1px solid #bbb;box-shadow:0 2px 8px rgba(0,0,0,.2);padding:6px 10px;white-space:nowrap;font-size:13px}}
 .menu .row{{display:flex;justify-content:space-between;gap:18px;padding:2px 0;font-weight:600}}
-.menu .txt{{font-weight:normal;font-size:11px;color:#444}}</style>
+.menu .txt{{font-weight:normal;font-size:11px;color:#444}}
+body.embed{{margin:0}} body.embed>:not(#d3):not(.credits):not(.maplegend):not(script){{display:none}}
+body.embed{{display:flex;flex-direction:column;height:100vh}} body.embed .credits,body.embed .maplegend{{margin:2px 6px}}
+body.embed #d3{{flex:1;height:auto!important;min-height:0}}
+body.embed #helpbtn,body.embed #viewlink{{display:none}}</style>
 </head><body>
 <div class="legend">times: <select id="zone"><option value="Asia/Jerusalem">Israel</option>
 <option value="UTC">UTC</option><option value="local">this computer's time zone</option></select>
@@ -675,8 +681,17 @@ border:1px solid #bbb;box-shadow:0 2px 8px rgba(0,0,0,.2);padding:6px 10px;white
 <div class="credits">{credits}</div>
 <script>
 const D = {data};
+// link options (see the map's help): embed=1 shows the map alone (with the credits) for an iframe
+const Q = new URLSearchParams(location.search);
+if (Q.get("embed") === "1") {{
+  document.body.classList.add("embed");
+  const full = new URL(location.href); full.searchParams.delete("embed");
+  document.querySelector(".credits").insertAdjacentHTML("afterbegin",
+    `<a href="${{full.href}}" target="_blank" style="margin-right:1em">open the full page ↗</a>`);
+}}
 // times are stored as ⟦format:epoch⟧ and shown in the zone picked above
-let ZONE = "Asia/Jerusalem";
+let ZONE = ["UTC", "local"].includes(Q.get("zone")) ? Q.get("zone") : "Asia/Jerusalem";
+document.getElementById("zone").value = ZONE;
 const zoneId = () => ZONE === "local" ? Intl.DateTimeFormat().resolvedOptions().timeZone : ZONE;
 function parts(t) {{
   const o = {{timeZone: zoneId(), hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
@@ -1013,13 +1028,14 @@ def deck_view(air, hops, mine, rec, signs, tip, tiles=TILES, focus=None, sources
                       f"{T(air[0]['t'], 'dhm')}–{T(air[-1]['t'], 'hm')} {T(air[-1]['t'], 'z')})", quote=True)
     page = f"""<h1 class="tz" data-raw="{head}"></h1>
 <div class="sub tz" data-raw="{sub}"></div>
-<div class="legend">{track_legend}
+<div class="legend maplegend">{track_legend}
 {jump_legend}
 <span style="color:#888">╌ no data &gt; {GAP} s</span>
 · altitude ×<input id="zx" type="range" min="1" max="20" value="5" style="vertical-align:middle;width:110px"><b
 id="zxv">5</b> <button id="zoomin">zoom to alerts</button> <button id="top">top view</button>
 <button id="reset">whole flight</button>{first_btn}
-<button id="helpbtn">? how to move</button></div>
+<button id="helpbtn">? how to move</button> <button id="viewlink" title="copy a link that opens the map at this
+view (for posts and iframes)">link to this view</button></div>
 <div id="help" style="display:none;font-size:13px;background:#fffbe6;border:1px solid #e0c060;padding:8px 12px;
 margin:4px 0;max-width:720px"><b>Moving around the map</b><br>
 • <b>Drag</b> with the left mouse button: move the map.<br>
@@ -1035,10 +1051,15 @@ to the start.<br>
 
 • Hover a point or line for details; hover the chart below the map to put a black dot on that moment.<br>
 • <b>times</b> (top): Israel time, UTC or your computer's time zone.<br>
-• The altitude slider stretches heights so climbs and dives are visible (×1 is true scale).</div>
+• The altitude slider stretches heights so climbs and dives are visible (×1 is true scale).<br>
+• <b>link to this view</b> copies a link that opens the map as it is now. Link options:
+<code>view=lat,lon,zoom,pitch,bearing,height</code> (height in m, where the camera aims),
+<code>x=</code> altitude ×, <code>go=alerts|first|top</code>, <code>zone=UTC|local</code>,
+<code>embed=1</code> (map only, for an iframe).</div>
 <div id="d3" style="height:640px"></div>"""
     js = r"""
-let Z = 5, cursor = null;
+let Z = Math.min(20, Math.max(1, +Q.get("x") || 5)), cursor = null;
+document.getElementById("zx").value = Z; document.getElementById("zxv").textContent = Z;
 const P = (p) => [p[0], p[1], p[2] * Z];
 const A = (a) => [a.lon, a.lat, a.z];
 const GLITCH = """ + json.dumps(GLITCH_RGB) + r""";
@@ -1081,11 +1102,17 @@ const fit = new deck.WebMercatorViewport({width: el.clientWidth, height: el.clie
 const aim = (alt) => [0, 0, (alt === undefined ? D.focusAlt : alt) * Z];  // camera target height
 const start = {longitude: fit.longitude, latitude: fit.latitude, zoom: Math.min(fit.zoom, 10),
                pitch: 50, bearing: 0, maxPitch: 85, position: aim()};
-let view = start, aimAlt;  // current view; height aimed at (undefined: the alerts')
-const map = new deck.DeckGL({container: "d3", initialViewState: start,
+// ?view=lat,lon,zoom,pitch,bearing[,height m]: open there (a post's or blog's chosen angle)
+const V = (Q.get("view") || "").split(",").map(Number);
+let aimAlt = V.length > 5 && isFinite(V[5]) ? V[5] : undefined;
+const first = V.length >= 5 && V.slice(0, 5).every(isFinite) ? {...start, latitude: V[0], longitude: V[1], zoom: V[2],
+  pitch: Math.min(85, V[3]), bearing: V[4], position: aim(aimAlt)} : start;
+let view = first, cam = first;  // current view (the user's moves and the buttons'); the camera as shown
+const map = new deck.DeckGL({container: "d3", initialViewState: first,
   // deck.gl would zoom toward the ground under the pointer, far from a track drawn high above it
   controller: {scrollZoom: false, doubleClickZoom: false}, layers: layers(),
   onViewStateChange: ({viewState, interactionState: i}) => {  // only the user's moves (a button's
+    cam = viewState;
     if (i && (i.isDragging || i.isPanning || i.isRotating || i.isZooming)) view = viewState;  // own: go())
   },
   getTooltip: ({object}) => object && object.tip ? {html: tz(object.tip)} : null});
@@ -1110,6 +1137,20 @@ document.getElementById("zoomin").onclick = () =>
   go({longitude: near.longitude, latitude: near.latitude, zoom: Math.min(near.zoom, 9), pitch: 50, bearing: 0});
 const fs = document.getElementById("firstsign"), sign = D.signs.find(s => s.first);
 if (fs) fs.onclick = () => go({longitude: sign.p[0], latitude: sign.p[1], zoom: 12, pitch: 55, bearing: 0}, sign.p[2]);
+({alerts: "zoomin", first: "firstsign", top: "top"})[Q.get("go")] &&
+  setTimeout(() => (document.getElementById({alerts: "zoomin", first: "firstsign", top: "top"}[Q.get("go")]) || {}).onclick?.(), 300);
+document.getElementById("viewlink").onclick = (e) => {
+  const c = cam, alt = (c.position ? c.position[2] : 0) / Z;
+  const u = new URL(location.href);
+  u.searchParams.set("view", [c.latitude.toFixed(4), c.longitude.toFixed(4), c.zoom.toFixed(2),
+                              Math.round(c.pitch), Math.round(c.bearing), Math.round(alt)].join(","));
+  u.searchParams.set("x", Z);
+  u.searchParams.delete("go");
+  history.replaceState(null, "", u);
+  const b = e.target, done = (t) => { b.textContent = t; setTimeout(() => b.textContent = "link to this view", 2000); };
+  navigator.clipboard ? navigator.clipboard.writeText(u.href).then(() => done("copied"), () => done("in the address bar"))
+                      : done("in the address bar");
+};
 document.getElementById("helpbtn").onclick = () => {
   const h = document.getElementById("help"); h.style.display = h.style.display === "none" ? "block" : "none";
 };
@@ -1198,6 +1239,9 @@ def main(argv=None):
             sys.exit(f"no alerts on a replay of {a.fixture}")
         if not a.filter and a.pick is None:  # the incident aircraft's first alert (the list is newest first)
             a.pick = max((i for i, x in enumerate(alerts, 1) if x["hex"] in meta["focus"]), default=len(alerts))
+        # incident events (meta "events": time, kind, message, lat, lon, alt) drawn as alerts; appended
+        # after the pick, so they do not move the alert numbers
+        alerts += [dict(e, hex=meta["focus"][0]) for e in meta.get("events", [])]
         if "--airport" not in (argv if argv is not None else sys.argv[1:]):
             a.airport = meta["airport"]
         origin = tuple(meta["airport_coords"]) if "airport_coords" in meta else None

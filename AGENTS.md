@@ -46,7 +46,10 @@ steep changes / altitude data glitches (shown unless switched off), an "alerts a
 time and the first detection (the monitor's VERTICAL_RATE check run on every trace report: when it could
 first have alerted; the lag is in the tooltip; dives that pass it with no alert are drawn as "not alerted", or
 "no monitor" (another marker) outside the alert file's span - 4XDAN 10 Oct 2026: 4 dives while the monitor
-ran, 2 alerted, polls refused with HTTP 429 half the time). Map labels are HTML laid out on screen after
+ran, 2 alerted, polls refused with HTTP 429 half the time). Map pages take link options (`view=lat,lon,zoom,pitch,bearing,height`,
+`x=` altitude ×, `go=alerts|first|top`, `zone=UTC|local`, `embed=1`: the map and credits only, for iframes) and a "link to
+this view" button that copies them; `docs/incidents.html` (Hebrew, 14 Oct 2026, by date) embeds the incident maps that way, with each flight's data source
+and a share image (`incidents_preview.png`, 1200x630, og / twitter tags; absolute Pages URLs). Map labels are HTML laid out on screen after
 every frame (beside their marker, moved apart with a line back where they would overlap), and must keep the credits:
 "Powered by Esri" + the tile service's sources, the flight-data source, the route sources.
 
@@ -381,11 +384,15 @@ Incident replays (`tests/replay.py`) serve captured real traffic the same way. K
   without permanently marking a provider or endpoint as unsupported.
 - **Incidents elsewhere** (`tests/test_replay_incidents.py`): FR4978 forced to Minsk (2021, ADS-B
   Exchange, 56 aircraft), AS1282 door plug (2024, 76 aircraft), MU5735 dive (2022, Flightradar24's
-  published data, the aircraft alone). Watched from a point near each (`airport_coords` -> `--lat` /
+  published data, the aircraft alone), AA77 / UA93 (11 Sep 2001, `tools/import_911.py` from the 11-septembre.com
+  Google Earth file `911maps.kmz`, not committed: the flight recorder path, 1 point a second, timed by the radar
+  returns, whose times are EDT although marked Z; kept as if the transponder stayed on; the switch-off is the
+  fixture's meta `events`, drawn by `plot_alert.py` as ⊘ TRANSPONDER_OFF). Watched from a point near each (`airport_coords` -> `--lat` /
   `--lon`; the Israel-only checks are off). ADS-B Exchange's history starts in May 2020 (404 before)
   and had nothing of MU5735 over China nor of AZAL 8243 after 04:16 UTC over Dagestan; older or
   uncovered incidents come in through `tools/import_track.py` (one aircraft from a CSV / KML; no
-  surrounding traffic, so detection only). Route data is today's and callsigns are reused: a captured
+  surrounding traffic, so detection only; 0,0 "no position" rows and exact earlier positions re-sent later are dropped:
+  FR24's JT610 CSV had 37 + 93, drawn as jumps across the world and as spikes). Route data is today's and callsigns are reused: a captured
   incident keeps its flight's route of the day in `meta.route_overrides`. Pre-ADS-B incidents (e.g.
   9/11: NTSB flight path studies and FAA radar records at the National Archives) would be radar
   plots without speeds, and transponders switched off show as the end of the points.
