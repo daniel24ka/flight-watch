@@ -1,17 +1,17 @@
 <!doctype html>
-<html lang="he" dir="rtl"><head><meta charset="utf-8"><title>שבע טיסות</title>
+<html lang="he" dir="rtl"><head><meta charset="utf-8"><title>מסלולי טיסות עם תקריות</title>
 <link rel="icon" type="image/png" href="logo.png">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="מה הייתה אומרת מערכת התרעה מוקדמת על תקריות טיסה אמיתיות, משוחזר מנתוני ADS-B">
 <meta property="og:type" content="article">
-<meta property="og:title" content="שבע טיסות">
+<meta property="og:title" content="מסלולי טיסות עם תקריות">
 <meta property="og:description" content="מה הייתה אומרת מערכת התרעה מוקדמת על תקריות טיסה אמיתיות, מ-2001 ועד היום, ומתי">
 <meta property="og:url" content="https://yuval-harpaz.github.io/flight-watch/incidents.html">
 <meta property="og:image" content="https://yuval-harpaz.github.io/flight-watch/incidents_preview.png">
 <meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
 <meta property="og:locale" content="he_IL">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="שבע טיסות">
+<meta name="twitter:title" content="מסלולי טיסות עם תקריות">
 <meta name="twitter:description" content="מה הייתה אומרת מערכת התרעה מוקדמת על תקריות טיסה אמיתיות, מ-2001 ועד היום, ומתי">
 <meta name="twitter:image" content="https://yuval-harpaz.github.io/flight-watch/incidents_preview.png">
 <style>
@@ -34,10 +34,10 @@ code,.ltr{direction:ltr;unicode-bidi:isolate}
 @media (max-width:600px){iframe{height:420px}}
 </style></head><body><main>
 
-<h1>שבע טיסות</h1>
+<h1>מסלולי טיסות עם תקריות</h1>
 <p class="lead"><a href="https://github.com/yuval-harpaz/flight-watch">flight-watch</a> היא מערכת התרעה מוקדמת על
 חריגות בטיסות לנתב"ג וממנו: ירידה תלולה, קוד חירום במשדר, פניית פרסה, אובדן קשר, נחיתה במקום אחר. היא קוראת נתוני
-ADS-B פתוחים (adsb.lol) כל 10 שניות. כאן הרצתי אותה על נתונים מוקלטים של שבע תקריות אמיתיות, מ-2001 ועד היום, כאילו צפתה בהן
+ADS-B פתוחים (adsb.lol) כל 10 שניות. כאן הרצתי אותה על נתונים מוקלטים של תקריות אמיתיות, מ-2001 ועד היום, כאילו צפתה בהן
 בזמן אמת, כדי לבדוק מה היא הייתה אומרת ומתי. בכל מפה אפשר לגרור, לסובב (Ctrl + גרירה) ולהגדיל. הזמנים ב-UTC.</p>
 
 <h2>AA77: חזרה בשקט לוושינגטון</h2>
@@ -94,6 +94,22 @@ ADS-B פתוחים (adsb.lol) כל 10 שניות. כאן הרצתי אותה ע�
 <p class="lesson">כאן המערכת נכשלה: היא התריעה רק 2 שניות לפני סוף הנתונים. הגלים שנראים במפה, טיפוס וירידה של כמה מאות
 רגל שוב ושוב בגובה נמוך אחרי ההמראה, הם דפוס חריג מאוד, אבל אף בדיקה שלה לא מחפשת אותו עדיין.</p>
 
+<h2>ET302: שש דקות מאדיס אבבה</h2>
+<p class="when">Ethiopian Airlines, אדיס אבבה ← ניירובי, ‏10 במרץ 2019, בואינג <span class="ltr">737 MAX 8, ET-AVJ</span></p>
+<p>ארבעה חודשים אחרי JT610, אותה תקלה: מיד אחרי ההמראה חיישן זווית התקיפה השמאלי נתן ערך שגוי, מערכת MCAS הורידה
+שוב ושוב את אף המטוס, והמטוס התרסק כשש דקות אחרי ההמראה, ב-05:44. 157 בני אדם נהרגו. אחרי שתי התאונות הקורקעו
+מטוסי ה-737 MAX בכל העולם לכמעט שנתיים. נתוני ה-ADS-B שנקלטו מסתיימים ב-05:41, כשלוש דקות לפני ההתרסקות.
+הגובה במפה הוא מעל השדה: אדיס אבבה נמצאת בגובה 2,300 מ', ו-ADS-B מדווח גובה לחץ (7,200 רגל בהמראה).</p>
+<figure><iframe loading="lazy" src="et302_map.html?embed=1&amp;zone=UTC&amp;x=6&amp;view=8.995,38.88,11.6,72,340,800"></iframe>
+<figcaption>הגובה מוגדל פי 6. <a href="et302_map.html?zone=UTC&amp;x=6&amp;view=8.995,38.88,11.6,72,340,800">המפה המלאה</a></figcaption></figure>
+<p class="src">מקור הנתונים: הנתונים המפורטים של Flightradar24 (CSV): <a href="https://www.flightradar24.com/blog/flight-tracking-news/major-incident/flightradar24-data-regarding-the-crash-of-ethiopian-airlines-flight-302/">הבלוג של Flightradar24</a></p>
+<table>
+<tr><td>05:38:18</td><td>(בנתונים) המראה</td></tr>
+<tr><td>05:41:02</td><td><span class="k">LOST_CONTACT</span>: נשמע לאחרונה כ-430 מ' מעל השדה, 11 מייל ימי ממנו</td></tr>
+</table>
+<p class="lesson">בדקות שנקלטו המטוס טיפס לאט ובאופן לא סדיר, כמה מאות רגל למעלה ולמטה, אבל אף בדיקה לא התריעה עד שהנתונים
+נגמרו. כמו ב-JT610, זה הדפוס שהמערכת צריכה ללמוד לזהות: טיפוס שנעצר ומתנודד מיד אחרי ההמראה.</p>
+
 <h2>FR4978: הנחתה בכפייה במינסק</h2>
 <p class="when">Ryanair, אתונה ← וילנה, ‏23 במאי 2021, בואינג <span class="ltr">737-800, SP-RSM</span></p>
 <p>מעל בלארוס, דקות לפני הגבול עם ליטא, הודיעה בקרת הטיסה הבלארוסית לטייסים על "איום פצצה", ומטוס קרב הוזנק. הטיסה
@@ -127,6 +143,21 @@ ADS-B פתוחים (adsb.lol) כל 10 שניות. כאן הרצתי אותה ע�
 <p class="lesson">התרעה 10 שניות אחרי תחילת הצלילה. כאן לא היה מה להציל, אבל הודעה כזאת מגיעה לפני כל דיווח
 אחר.</p>
 
+<h2>Horizon 2059: טייס מחוץ למשמרת במושב הנוסף</h2>
+<p class="when">Horizon Air (עבור Alaska Airlines), אוורט ← סן פרנסיסקו, ‏22 באוקטובר 2023 (שעון מקומי), אמבראר <span class="ltr">E175, N660QX</span></p>
+<p>טייס שלא היה בתפקיד, שישב במושב הנוסף בתא הטייס, ניסה למשוך את ידיות כיבוי האש של המנועים, שהיו מנתקות את הדלק.
+הצוות השתלט עליו והחזיר את הידיות. המטוס פנה מגובה 31,000 רגל ונחת בפורטלנד. אף אחד לא נפגע.</p>
+<figure><iframe loading="lazy" src="qx2059_map.html?embed=1&amp;zone=UTC&amp;x=3&amp;view=45.15,-123.00,8.6,60,330,6000"></iframe>
+<figcaption>בשחזור הזה המערכת צופה מפורטלנד, ברדיוס 150 מייל ימי. <a href="qx2059_map.html?zone=UTC&amp;x=3&amp;view=45.15,-123.00,8.6,60,330,6000">המפה המלאה</a></figcaption></figure>
+<p class="src">מקור הנתונים: היסטוריית ADS-B Exchange: <a href="https://globe.adsbexchange.com/?icao=a8b5ad&amp;showTrace=2023-10-23">N660QX, ‏23.10.2023 UTC</a></p>
+<table>
+<tr><td>01:05</td><td>(בנתונים) המטוס עוזב את 31,000 רגל ופונה מזרחה, ואחר כך צפונה</td></tr>
+<tr><td>01:10:12</td><td><span class="k">COURSE_CHANGE</span>: פנייה מ-144° ל-69°, ב-24,775 רגל</td></tr>
+<tr><td>01:10:34</td><td><span class="k">OFF_COURSE</span>: טיסה לסן פרנסיסקו טסה הרחק ממנה</td></tr>
+<tr><td>01:26</td><td>(בנתונים) נחיתה בפורטלנד</td></tr>
+</table>
+<p class="lesson">בלי קוד חירום במשדר, המערכת זיהתה את החזרה כחמש דקות אחרי שהתחילה, כרבע שעה לפני הנחיתה.</p>
+
 <h2>AS1282: חור בגוף המטוס</h2>
 <p class="when">Alaska Airlines, פורטלנד ← אונטריו (קליפורניה), ‏5 בינואר 2024 (שעון מקומי), בואינג <span class="ltr">737 MAX 9, N704AL</span></p>
 <p>בגובה של כ-16,000 רגל, דקות אחרי ההמראה, נתלש פקק דלת בצד המטוס. הצוות ירד בצורה מבוקרת וחזר לפורטלנד. אף אחד
@@ -141,6 +172,21 @@ ADS-B פתוחים (adsb.lol) כל 10 שניות. כאן הרצתי אותה ע�
 <p class="lesson">בנתוני ADS-B זה נראה כמו טיסה רגילה: ירידה מתונה, בלי קוד חירום במשדר, והמטוס לא התרחק יותר מ-29 מייל
 ימי. ההתרעה הגיעה רק בנחיתה, 13 דקות אחרי האירוע. מטוס שעוצר את הטיפוס, יורד ופונה חזרה לשדה ממנו המריא יכול להספיק
 כבר להתרעה מוקדמת יותר.</p>
+
+<h2>UA2005: ניסיון לפרוץ לתא הטייס</h2>
+<p class="when">United Airlines, שיקגו ← מיניאפוליס, ‏29 במאי 2026 (שעון מקומי), בואינג <span class="ltr">737-900, N69818</span></p>
+<p>כעשרים דקות אחרי ההמראה ניסה נוסע מבוגר שוב ושוב לפרוץ את דלת תא הטייס. שוטרים שהיו על המטוס השתלטו עליו. הטייסים
+שידרו את קוד החטיפה, 7500, ונחתו במדיסון, ויסקונסין. אף אחד לא נפגע.</p>
+<figure><iframe loading="lazy" src="ua2005_map.html?embed=1&amp;zone=UTC&amp;x=3&amp;view=43.40,-89.25,8.6,60,0,5000"></iframe>
+<figcaption>בשחזור הזה המערכת צופה ממדיסון, ברדיוס 60 מייל ימי. <a href="ua2005_map.html?zone=UTC&amp;x=3&amp;view=43.40,-89.25,8.6,60,0,5000">המפה המלאה</a></figcaption></figure>
+<p class="src">מקור הנתונים: היסטוריית ADS-B Exchange: <a href="https://globe.adsbexchange.com/?icao=a94b0a&amp;showTrace=2026-05-30">N69818, ‏30.5.2026 UTC</a></p>
+<table>
+<tr><td>01:52:25</td><td><span class="k">EMERGENCY</span>: קוד 7500, חטיפה, ב-28,000 רגל</td></tr>
+<tr><td>01:55:07</td><td><span class="k">COURSE_CHANGE</span>: פנייה מ-308° ל-232°</td></tr>
+<tr><td>01:58:21</td><td><span class="k">OFF_COURSE</span>: טיסה למיניאפוליס מתרחקת ממנה</td></tr>
+<tr><td>02:11</td><td>(בנתונים) נחיתה במדיסון</td></tr>
+</table>
+<p class="lesson">כאן הצוות הודיע בעצמו: קוד 7500 הוא ההתרעה הברורה ביותר, והמערכת העבירה אותו מיד.</p>
 
 <h2>FZ1073: צלילה, 7700, 7500 ונחיתה בתבוכ</h2>
 <p class="when">flydubai, דובאי ← תל אביב, ‏30 בספטמבר 2026, בואינג <span class="ltr">737 MAX 8, A6-FKF</span></p>
@@ -162,8 +208,8 @@ ADS-B פתוחים (adsb.lol) כל 10 שניות. כאן הרצתי אותה ע�
 <p class="lesson">ההתרעה הראשונה יצאה 29 שניות אחרי תחילת הצלילה, כשעה לפני הנחיתה המתוכננת בנתב"ג. לוח הטיסות הראה
 רק עיכוב.</p>
 
-<div class="credits">מפות: Esri (המקורות מפורטים בכל מפה). נתוני טיסה: ADS-B Exchange (FZ1073, FR4978, AS1282),
-Flightradar24 (MU5735, JT610), 911maps.kmz של
+<div class="credits">מפות: Esri (המקורות מפורטים בכל מפה). נתוני טיסה: ADS-B Exchange (FZ1073, UA2005, AS1282, Horizon 2059, FR4978),
+Flightradar24 (MU5735, ET302, JT610), 911maps.kmz של
 <a href="http://www.11-septembre.com">11-septembre.com</a>, דרך <a href="https://www.reddit.com/r/911archive/comments/1n2hhti/comment/nb6h94n/">r/911archive</a> (AA77, UA93: מסלול רשם הטיסה של ה-NTSB ומכ"מי FAA / NEADS). מסלולים: Virtual Radar Server standing data. קוד:
 <a href="https://github.com/yuval-harpaz/flight-watch">github.com/yuval-harpaz/flight-watch</a></div>
 </main></body></html>
