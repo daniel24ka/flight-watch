@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import csv
+import glob
 import html
 import json
 import math
@@ -178,6 +180,55 @@ def points(tr: dict) -> list[dict]:
     return out
 
 
+def airfields() -> list[tuple[float, float, int]]:
+    """(lat, lon, elevation ft) of the airports in the local standing-data checkout; [] without it.
+    Heliports are left out: many are on roofs (2.2 nm from PDX at 296 ft, 2.5 nm from EWR at 1,041 ft)."""
+    out = []
+    for name in glob.glob(os.path.join(os.path.dirname(__file__), "..", "standing-data", "airports", "schema-01",
+                                       "*", "*.csv")):
+        with open(name, encoding="utf-8-sig") as f:
+            for row in csv.DictReader(f):
+                if re.search(r"heli", row.get("Name") or "", re.I):
+                    continue
+                try:
+                    out.append((float(row["Latitude"]), float(row["Longitude"]), int(float(row["AltitudeFeet"]))))
+                except (KeyError, TypeError, ValueError):
+                    continue
+    return out
+
+
+def on_terrain(pts: list[dict], fields: list[tuple[float, float, int]]) -> int:
+    """Fit the track to the map's terrain (heights above sea level). ADS-B sends no altitude on the ground
+    ("ground", or 0 in some exports): ground reports go at the elevation of the airfield they are at (within 3 nm), else at the
+    nearest airborne report's. Its altitude is pressure altitude (1013 hPa), off the true one by the
+    weather (~30 ft per hPa) or a failing air-data sensor: ET302 left Addis Ababa (7,630 ft) at "7,200 ft".
+    A track below the airfield it took off from or landed at is raised by the difference (returned, ft)."""
+    near = {}
+    def field(p):
+        k = (round(p["lat"], 3), round(p["lon"], 3))
+        if k not in near:
+            d, f = min(((fw.haversine_nm(la, lo, p["lat"], p["lon"]), (la, lo, e)) for la, lo, e in fields
+                        if abs(la - p["lat"]) < 0.06 and abs(lo - p["lon"]) < 0.08), default=(99, None))
+            near[k] = f if d <= 3 else None
+        return near[k]
+    for p in pts:  # FR24's CSVs send 0 on the take-off roll (ET302)
+        p["ground"] = p["ground"] or p["alt"] == 0
+    air = [p for p in pts if not p["ground"] and isinstance(p["alt"], (int, float))]
+    lift = 0
+    for end in (air[:1], air[-1:]):  # the take-off and landing airfields
+        f = field(end[0]) if end else None
+        low = [p["alt"] for p in air if f is not None and field(p) == f]
+        if low and min(low) < f[2]:
+            lift = max(lift, f[2] - min(low))
+    for p in air:
+        p["alt"] += lift
+    for p in pts:
+        if p["ground"]:
+            f = field(p)
+            p["alt"] = f[2] if f is not None else min(air, key=lambda q: abs(q["t"] - p["t"]))["alt"] if air else 0
+    return lift
+
+
 def trace_for(hexid: str, t: float) -> tuple[list[dict], str]:
     """Positions of the aircraft around time t: adsb.lol's recent trace if it reaches back to t,
     else ADS-B Exchange's history of that UTC day (and the day before, for legs over midnight)."""
@@ -202,13 +253,9 @@ def fixture_points(fixture: dict, hexid: str) -> list[dict]:
     """A replay fixture's rows of one aircraft (tests/replay.py, tools/capture_incident.py,
     tools/import_track.py) in the shape of points(); callsign and squawk carry on until they change."""
     out, state = [], {}
-    # ADS-B reads 0 on the ground and pressure altitude in the air, while the map's ground is at 0: from
-    # a high airfield (meta ground_alt_ft, its first airborne value - ET302 at Addis Ababa: 7,200 ft)
-    # heights are drawn above the airfield, so the take-off starts on the map
-    ground = fixture["meta"].get("ground_alt_ft", 0)
     for t, lat, lon, alt, gs, trk, vr, flight, squawk, _, _ in fixture["aircraft"][hexid]["points"]:
         state.update({k: v for k, v in (("flight", flight), ("squawk", squawk)) if v})
-        out.append({"t": t, "lat": lat, "lon": lon, "alt": 0 if alt in ("ground", 0) else alt if alt is None else alt - ground, "ground": alt == "ground",
+        out.append({"t": t, "lat": lat, "lon": lon, "alt": 0 if alt == "ground" else alt, "ground": alt == "ground",
                     "geo": False, "gs": gs, "track": trk, "new_leg": False, "vrate": vr, "src": "adsb", **state})
     return out
 
@@ -429,9 +476,18 @@ def hover(p: dict) -> str:
 
 VIRIDIS = [(68, 1, 84), (59, 82, 139), (33, 145, 140), (94, 201, 98), (253, 231, 37)]
 DECK = "https://unpkg.com/deck.gl@9.1.14/dist.min.js"
+# deck.gl's bundle decodes terrain only in a worker it fetches itself (never ran in headless Chrome);
+# the loader of its loaders.gl version, parsing on the page
+TERRAIN_LOADER = "https://unpkg.com/@loaders.gl/terrain@4.2.1/dist/dist.min.js"
 # Keyless map tiles that also load from a local file (tile.openstreetmap.org blocks pages without a
 # Referer - "Access blocked" - and CARTO now needs an API key). --tiles takes any {z}/{x}/{y} URL.
 TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"
+# The ground's height (Mapzen / AWS open terrain tiles, terrarium PNG, metres, CORS *): flight altitudes are
+# above sea level, so on a flat map a high airfield's take-off started in the air (ET302 at Addis Ababa,
+# 7,630 ft). Below sea level (sea floor) is drawn at 0. Zoom 15 at most.
+TERRAIN = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+TERRAIN_CREDIT = ('Elevation: <a href="https://registry.opendata.aws/terrain-tiles/">Terrain Tiles</a> (Mapzen, AWS '
+                  'Open Data: SRTM, GMTED, ETOPO1, NED, 3DEP, EU-DEM and others)')
 # Esri's attribution: "Powered by Esri" linked to esri.com, plus the service's copyrightText
 TILES_CREDIT = ('Map: Powered by <a href="https://www.esri.com">Esri</a> | Sources: Esri, HERE, Garmin, USGS, '
                 'Intermap, INCREMENT P, NRCan, Esri Japan, METI, Esri China (Hong Kong), Esri Korea, '
@@ -454,7 +510,7 @@ def viridis(f: float) -> list[int]:
 
 def build(rec: dict, alerts: list[dict], pts: list[dict], source: str, max_speed: float = 1200,
           gap_speed: float = 750, airport: str = "TLV", use_map: bool = False, tiles: str = TILES,
-          sources: bool = False, origin: tuple | None = None) -> str:
+          sources: bool = False, origin: tuple | None = None, base: float = 0) -> str:
     t0, t1 = pts[0]["t"], pts[-1]["t"]
     mine = [a for a in alerts if a["hex"] == rec["hex"] and t0 - 60 <= epoch(a["time"]) <= t1 + 60]
     if rec not in mine:
@@ -585,7 +641,7 @@ def build(rec: dict, alerts: list[dict], pts: list[dict], source: str, max_speed
                f"{fw.haversine_nm(lat0, lon0, p['lat'], p['lon']) * NM:.0f} km from {airport}"
 
     if use_map:
-        view = deck_view(air, hops, mine, rec, signs, tip, tiles, focus_ll, sources, glitches, places)
+        view = deck_view(air, hops, mine, rec, signs, tip, tiles, focus_ll, sources, glitches, places, base)
     else:
         view = plotly_view(air, hops, mine, rec, signs, xr, yr, ztop, airport, title, sub, tip, km, focus_km,
                            sources, glitches, places)
@@ -965,7 +1021,7 @@ const retime3d = draw3d;
 
 
 def deck_view(air, hops, mine, rec, signs, tip, tiles=TILES, focus=None, sources=False, glitches=(),
-              places=None) -> dict:
+              places=None, base=0) -> dict:
     """The same over a street map (Esri World Street Map tiles by default) with deck.gl: drag to pan,
     right-drag / Ctrl+drag to tilt and rotate. Altitude exaggerated (adjustable)."""
     t0, t1 = air[0]["t"], air[-1]["t"]
@@ -1016,10 +1072,10 @@ def deck_view(air, hops, mine, rec, signs, tip, tiles=TILES, focus=None, sources
             # above the map otherwise flies underneath it
             "focusAlt": sorted([a["_alt"] for a in mine] + [air[c["start"]]["alt"] for c in signs if c["first"]])[
                 len(mine) // 2] * ft,
-            "tiles": tiles,
+            "tiles": tiles, "terrain": TERRAIN, "base": round(base * FT),
             "pos": [[p["lon"], p["lat"], p["alt"] * ft] for p in air]}
     ident = rec.get("flight") or rec.get("callsign") or rec["hex"].upper()
-    credit = TILES_CREDIT if tiles == TILES else f"map tiles: {tiles.split('/')[2]}"
+    credit = (TILES_CREDIT if tiles == TILES else f"map tiles: {tiles.split('/')[2]}") + " · " + TERRAIN_CREDIT
     jump_legend = "" if sources else '<span style="color:#ff9900">━ position jumps</span>'
     track_legend = ("".join(f'<span style="color:{c}">━ {n}</span>' for _, n, c, _ in SOURCES)
                     + f'<span style="color:{SOURCES[0][2]}">┅ ADS-B while MLAT is available</span>' if sources
@@ -1064,20 +1120,41 @@ to the start.<br>
     js = r"""
 let Z = Math.min(20, Math.max(1, +Q.get("x") || 5)), cursor = null;
 document.getElementById("zx").value = Z; document.getElementById("zxv").textContent = Z;
-const P = (p) => [p[0], p[1], p[2] * Z];
+// heights are exaggerated (x Z) above the airfield (D.base, m), not above sea level: x 6 would lift Addis
+// Ababa's ground (2,326 m) to 14 km, where deck.gl, picking tiles as if the ground were at 0, left out the near ones
+const H = (h) => D.base + (h - D.base) * Z;
+const P = (p) => [p[0], p[1], H(p[2])];
 const A = (a) => [a.lon, a.lat, a.z];
 const GLITCH = """ + json.dumps(GLITCH_RGB) + r""";
+// terrain heights x Z, as the track; the sea floor raised to sea level (terrarium: m = R*256 + G + B/256 - 32768)
+const baseFetch = deck.Layer.defaultProps.fetch.value || deck.Layer.defaultProps.fetch;
+async function seaLevel(url, ctx) {
+  if (ctx.propName !== "elevationData") return baseFetch(url, ctx);
+  const r = await fetch(url, {signal: ctx.signal});
+  const img = await createImageBitmap(await r.blob(), {colorSpaceConversion: "none", premultiplyAlpha: "none"});
+  const c = new OffscreenCanvas(img.width, img.height), g = c.getContext("2d", {willReadFrequently: true});
+  g.drawImage(img, 0, 0);
+  const d = g.getImageData(0, 0, c.width, c.height), a = d.data;
+  let sea = false;
+  for (let i = 0; i < a.length; i += 4) if (a[i] < 128) { a[i] = 128; a[i + 1] = 0; a[i + 2] = 0; sea = true; }
+  if (!sea) return baseFetch(url, ctx);  // land only: the original (from the browser's cache), no re-encoding
+  g.putImageData(d, 0, 0);
+  const u = URL.createObjectURL(await c.convertToBlob({type: "image/png"}));
+  try { return await baseFetch(u, ctx); } finally { URL.revokeObjectURL(u); }
+}
+const onGround = {extensions: [new deck._TerrainExtension()]};
 const off = (d) => (d.k === "steep" || d.k === "glitch") && hidden("_" + d.k);  // switched off in the menu
 function layers() {
   return [
-    // zoomOffset: the camera aims above the ground (aim()), which would otherwise pick blurry tiles
-    new deck.TileLayer({id: "tiles", data: D.tiles, minZoom: 0, maxZoom: 19, tileSize: 256, zoomOffset: 1,
-      renderSubLayers: props => {
-        const [[w, s], [e, n]] = props.tile.boundingBox;
-        return new deck.BitmapLayer(props, {data: null, image: props.data, bounds: [w, s, e, n]});
-      }}),
+    // the ground with its heights (x Z, as the track): see TERRAIN
+    new deck.TerrainLayer({id: "terrain" + Z, elevationData: D.terrain, texture: D.tiles, minZoom: 0, maxZoom: 15,
+      // a quarter of the tiles of zoomOffset 1 (each is two downloads and a mesh); a coarser mesh (m x Z)
+      tileSize: 256, zoomOffset: 0, operation: "terrain+draw", fetch: seaLevel, meshMaxError: 5 * Z,
+      loaders: [loaders.TerrainLoader], loadOptions: {worker: false},
+      elevationDecoder: {rScaler: 256 * Z, gScaler: Z, bScaler: Z / 256, offset: -32768 * Z + D.base * (1 - Z)}}),
     new deck.LineLayer({id: "shadow", data: D.segs, getSourcePosition: d => [d.a[0], d.a[1], 0],
-      getTargetPosition: d => [d.b[0], d.b[1], 0], getColor: [100, 100, 100, 90], getWidth: 1}),
+      getTargetPosition: d => [d.b[0], d.b[1], 0], getColor: [100, 100, 100, 90], getWidth: 1,
+      ...onGround, terrainDrawMode: "drape"}),
     new deck.LineLayer({id: "drops", data: visible(), getSourcePosition: d => [d.lon, d.lat, 0],
       getTargetPosition: d => P(A(d)), getColor: d => [...G[d.g].rgb, 160], getWidth: 1,
       updateTriggers: {getTargetPosition: Z}}),
@@ -1088,8 +1165,9 @@ function layers() {
     new deck.ScatterplotLayer({id: "pts", data: D.pts, pickable: true, getPosition: d => P(d.p),
       getFillColor: d => d.c, radiusUnits: "pixels", getRadius: 1.5, updateTriggers: {getPosition: Z}}),
     new deck.ScatterplotLayer({id: "airports", data: D.airports, getPosition: d => d.p,
-      getFillColor: [80, 80, 80], radiusUnits: "pixels", getRadius: 3}),
+      getFillColor: [80, 80, 80], radiusUnits: "pixels", getRadius: 3, ...onGround, terrainDrawMode: "offset"}),
     new deck.TextLayer({id: "airport-names", data: D.airports, getPosition: d => d.p, getText: d => d.label,
+      ...onGround, terrainDrawMode: "offset",
       getSize: 12, getColor: [60, 60, 60], getPixelOffset: [0, -12], fontSettings: {sdf: true}, outlineWidth: 4, outlineColor: [255, 255, 255, 230]}),
     // alert markers: their group's shape as a character (deck.gl points are only circles)
     new deck.TextLayer({id: "alerts", data: visible(), pickable: true, getPosition: d => P(A(d)),
@@ -1103,7 +1181,7 @@ function layers() {
 const el = document.getElementById("d3");
 const fit = new deck.WebMercatorViewport({width: el.clientWidth, height: el.clientHeight})
   .fitBounds(D.bounds, {padding: 60});
-const aim = (alt) => [0, 0, (alt === undefined ? D.focusAlt : alt) * Z];  // camera target height
+const aim = (alt) => [0, 0, H(alt === undefined ? D.focusAlt : alt)];  // camera target height
 const start = {longitude: fit.longitude, latitude: fit.latitude, zoom: Math.min(fit.zoom, 10),
                pitch: 50, bearing: 0, maxPitch: 85, position: aim()};
 // ?view=lat,lon,zoom,pitch,bearing[,height m]: open there (a post's or blog's chosen angle)
@@ -1207,7 +1285,7 @@ function layoutLabels() {
 }
 map.setProps({onAfterRender: layoutLabels});
 """
-    return {"head": f'\n<script src="{DECK}"></script>', "html": page, "data": data, "js": js, "credit": credit}
+    return {"head": f'\n<script src="{DECK}"></script>\n<script src="{TERRAIN_LOADER}"></script>', "html": page, "data": data, "js": js, "credit": credit}
 
 
 def main(argv=None):
@@ -1257,11 +1335,6 @@ def main(argv=None):
     t = epoch(rec["time"])
     if a.fixture:
         pts, source = fixture_points(fixture, rec["hex"]), meta["source"]
-        ground = meta.get("ground_alt_ft", 0)
-        if ground:  # alerts too, as fixture_points
-            for x in alerts:
-                x["alt"] = max(0, x["alt"] - ground) if isinstance(x.get("alt"), (int, float)) else x.get("alt")
-            source += f"; heights above the airfield (pressure altitude - {ground:,} ft)"
     else:
         print(f"fetching trace of {rec['hex']} ...", file=sys.stderr)
         pts, source = trace_for(rec["hex"], t)
@@ -1274,9 +1347,20 @@ def main(argv=None):
         pts = leg(pts, t)
     if not [q for q in pts if q["alt"] is not None]:
         sys.exit("no positions found around the alert time")
+    fields = airfields()
+    lift = on_terrain(pts, fields)
+    # the map exaggerates heights above the ground near the alert: the nearest airfield's (40 nm), else sea level
+    d, base = min(((fw.haversine_nm(la, lo, rec["lat"], rec["lon"]), e) for la, lo, e in fields
+                   if abs(la - rec["lat"]) < 1 and abs(lo - rec["lon"]) < 1.5), default=(99, 0))
+    base = max(0, base) if d <= 40 else 0
+    if lift:
+        for x in alerts:
+            if x["hex"] == rec["hex"] and isinstance(x.get("alt"), (int, float)):
+                x["alt"] += lift
+        source += f" (altitudes raised {lift:,} ft to the airfield's height)"
     with open(a.out, "w", encoding="utf-8") as f:
         f.write(build(rec, alerts, pts, source, a.max_speed, a.max_gap_speed, a.airport, a.map, a.tiles,
-                      a.sources, origin))
+                      a.sources, origin, base))
     print(f"wrote {a.out} ({len(pts)} positions, {source})")
     if not a.no_open:
         webbrowser.open("file://" + os.path.abspath(a.out))
