@@ -4,26 +4,18 @@ Source list: Wikipedia "List of aircraft hijackings", 2020s section (read 15 Oct
 gone through yet). Free ADS-B history (ADS-B Exchange globe_history, used by `tools/capture_incident.py`)
 starts **May 2020** (404 before), so older events need a track file from elsewhere (`tools/import_track.py`).
 
-## Captured
+## Captured (tests in `tests/test_replay_incidents.py`; maps in `docs/`, not linked from `incidents.html`)
 
-| Event | Fixture | Replay alerts on the aircraft |
-|---|---|---|
-| UA2005, 29/30 May 2026, ORD->MSP, B739 N69818 (hex a94b0a), passenger at cockpit door, **squawk 7500** 01:52:25 UTC, diverted to Madison (landed 02:11) | `tests/data/ua2005_2026-05-30.json.gz` (watched point MSN, 60 nm, 01:40-02:20 UTC, 122 aircraft, route override UAL2005=KORD-KMSP) | EMERGENCY 7500, COURSE_CHANGE, OFF_COURSE. Map: `docs/ua2005_map.html`. **No test written yet** (add a class to `tests/test_replay_incidents.py`; noise on others: 1 OFF_COURSE) |
+| Event | Fixture | Replay alerts on the aircraft | Map |
+|---|---|---|---|
+| UA2005, 30 May 2026 UTC, ORD->MSP, B739 N69818, passenger at cockpit door, **squawk 7500** 01:52:25, landed Madison 02:11 | `ua2005_2026-05-30` (MSN, 60 nm, 122 aircraft) | EMERGENCY 7500, COURSE_CHANGE, OFF_COURSE | `ua2005_map.html` |
+| Horizon 2059, 23 Oct 2023 UTC, PAE->SFO, E175 N660QX, off-duty pilot pulled the fire handles; no squawk; turned back at FL310 01:05, landed PDX 01:26 | `qx2059_2023-10-23` (PDX, 150 nm, 246 aircraft) | COURSE_CHANGE + OFF_COURSE at 01:10 | `qx2059_map.html` |
+| Frontier 3345, 1 Jun 2026 UTC, SJU->ORD, A21N N660FR, passenger tried the exit door and cockpit, landed Miami 03:55 | `f93345_2026-06-01` (MIA, 100 nm, 181 aircraft) | **none** - invisible in ADS-B (no squawk, Miami within ~30 deg of Chicago's direction). A recorded limit | none (`plot_alert.py --fixture` needs an alert on the aircraft) |
+| ET302, 10 Mar 2019 (Flightradar24 granular CSV, already in the repo) | `et302_2019-03-10` | LOST_CONTACT only: the data ends at 05:41, 8,600 ft, ~3 min before the crash | `et302_map.html` |
 
-## Found in ADS-B Exchange, not captured yet
-
-- **Horizon/Alaska 2059**, 23 Oct 2023 UTC, PAE->SFO, E175 N660QX (hex a8b5ad), off-duty pilot pulled the
-  engine fire handles. No emergency squawk. At 01:05 UTC, FL310 ~35 nm SSW of Portland, turned back, landed
-  PDX 01:26. Command:
-  ```bash
-  python tools/capture_incident.py --date 2023-10-23 --start 00:50 --end 01:35 --airport PDX --icao KPDX \
-      --lat 45.5887 --lon -122.5975 --radius 150 --before-h 0 --after-h 0 --focus a8b5ad \
-      --route QXE2059=KPAE-KSFO --name "Horizon 2059 ..." --out tests/data/qx2059_2023-10-23.json.gz
-  ```
-  Expect OFF_COURSE (bound for SFO, flying away). Watch the noise budget (busy Portland airspace).
-- **Frontier 3345**, 31 May / 1 Jun 2026 UTC, SJU->ORD, A21N N660FR (hex a8b4c6), diverted to Miami
-  (landed 03:55 UTC). Nothing visible in ADS-B: no squawk, a 40 min coverage gap over the Bahamas, track
-  toward Miami within ~30 deg of Chicago until the descent. Not worth a fixture (no monitor could flag it).
+Noise: Horizon 2059's replay has 15 alerts on other aircraft, 7 of them high priority, mostly from today's
+route data applied to 2023 callsigns (ASA1383 taken as a Portland arrival landed at Seattle). Old captures
+need routes of the day; only the incident flight's route is overridden.
 
 ## Not available (no ADS-B coverage found)
 
