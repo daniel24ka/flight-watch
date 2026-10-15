@@ -202,12 +202,13 @@ def fixture_points(fixture: dict, hexid: str) -> list[dict]:
     """A replay fixture's rows of one aircraft (tests/replay.py, tools/capture_incident.py,
     tools/import_track.py) in the shape of points(); callsign and squawk carry on until they change."""
     out, state = [], {}
-    # ADS-B reads 0 on the ground (pressure altitude otherwise): a high airfield's ground is drawn at
-    # meta ground_alt_ft, the first airborne value (ET302 at Addis Ababa: 7,200 ft)
+    # ADS-B reads 0 on the ground and pressure altitude in the air, while the map's ground is at 0: from
+    # a high airfield (meta ground_alt_ft, its first airborne value - ET302 at Addis Ababa: 7,200 ft)
+    # heights are drawn above the airfield, so the take-off starts on the map
     ground = fixture["meta"].get("ground_alt_ft", 0)
     for t, lat, lon, alt, gs, trk, vr, flight, squawk, _, _ in fixture["aircraft"][hexid]["points"]:
         state.update({k: v for k, v in (("flight", flight), ("squawk", squawk)) if v})
-        out.append({"t": t, "lat": lat, "lon": lon, "alt": ground if alt in ("ground", 0) else alt, "ground": alt == "ground",
+        out.append({"t": t, "lat": lat, "lon": lon, "alt": 0 if alt in ("ground", 0) else alt if alt is None else alt - ground, "ground": alt == "ground",
                     "geo": False, "gs": gs, "track": trk, "new_leg": False, "vrate": vr, "src": "adsb", **state})
     return out
 
@@ -1256,6 +1257,11 @@ def main(argv=None):
     t = epoch(rec["time"])
     if a.fixture:
         pts, source = fixture_points(fixture, rec["hex"]), meta["source"]
+        ground = meta.get("ground_alt_ft", 0)
+        if ground:  # alerts too, as fixture_points
+            for x in alerts:
+                x["alt"] = max(0, x["alt"] - ground) if isinstance(x.get("alt"), (int, float)) else x.get("alt")
+            source += f"; heights above the airfield (pressure altitude - {ground:,} ft)"
     else:
         print(f"fetching trace of {rec['hex']} ...", file=sys.stderr)
         pts, source = trace_for(rec["hex"], t)
