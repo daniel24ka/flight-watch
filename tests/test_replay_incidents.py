@@ -15,6 +15,19 @@ other aircraft today - lower it as tuning improves, never raise it casually.
 - MU5735 (CES5735, B-1791, Kunming -> Guangzhou), 21 Mar 2022, Flightradar24's granular data
   (ADS-B Exchange had no coverage there), imported with tools/import_track.py: dive from FL291 at
   06:20 UTC, last report 3,225 ft falling 31,000 ft/min.
+- ET302 (ETH302, ET-AVJ, Addis Ababa -> Nairobi), 10 Mar 2019, Flightradar24's granular data: the
+  data ends at 05:41:02 UTC, 8,600 ft, ~3 min before the crash; only LOST_CONTACT.
+- UA2005 (UAL2005, N69818, Chicago -> Minneapolis), 30 May 2026 UTC, ADS-B Exchange history, 122
+  aircraft around Madison: a passenger tried to breach the cockpit, squawk 7500 at 01:52:25, U-turn,
+  landed at Madison 02:11.
+- Horizon 2059 (QXE2059, N660QX, Everett -> San Francisco), 23 Oct 2023, ADS-B Exchange history, 246
+  aircraft around Portland: an off-duty pilot pulled the engine fire handles; no squawk; turned back
+  at FL310 at 01:05, landed at Portland 01:26. Most noise is today's route data on 2023 callsigns
+  (ASA1383 taken as a Portland arrival landed at Seattle: OFF_COURSE + DIVERSION).
+- Frontier 3345 (FFT3345, N660FR, San Juan -> Chicago), 1 Jun 2026 UTC, ADS-B Exchange history, 181
+  aircraft around Miami: a passenger tried the exit door and the cockpit, diverted to Miami. Nothing
+  in ADS-B tells (no squawk, a 40 min gap over the Bahamas, Miami lies within ~30 deg of Chicago's
+  direction): no alert, recorded as a limit.
 - AA77 and UA93, 11 Sep 2001, from 911maps.kmz (11-septembre.com) with tools/import_911.py: the flight
   recorder path (1 point a second, with altitude), timed by FAA / NEADS radar returns, as if the
   transponder had stayed on (it was switched off: AA77 08:55, UA93 09:40 EDT). Watched from Dulles and
@@ -36,6 +49,7 @@ class Incident:
     """Mixin: replay FIXTURE once; `first` finds the focus aircraft's alert of a kind in a window."""
     FIXTURE = DATE = ""
     NOISE_BUDGET = 0
+    HIGH_NOISE_BUDGET = 0  # high-priority alerts allowed on other aircraft (stale routes of an old day)
 
     @classmethod
     def setUpClass(cls):
@@ -57,7 +71,7 @@ class Incident:
     def test_no_high_priority_false_alarms_on_other_flights(self):
         bad = [a for a in self.others if a["kind"] in ("DIVERSION", "RETURNED", "EMERGENCY", "OFF_COURSE",
                                                        "TURNING_BACK", "TOWARD_ISRAEL")]
-        self.assertFalse(bad, "\n" + replay.timeline(bad))
+        self.assertLessEqual(len(bad), self.HIGH_NOISE_BUDGET, "\n" + replay.timeline(bad))
 
 
 class FR4978Replay(Incident, unittest.TestCase):
@@ -131,6 +145,45 @@ class UA93Replay(Incident, unittest.TestCase):
     def test_final_dive(self):
         self.first("VERTICAL_RATE", "14:02:30", "14:03:11", "DESCENT")
         self.first("LOST_CONTACT", "14:03:00", "14:05:00", "falling")
+
+
+
+class ET302Replay(Incident, unittest.TestCase):
+    FIXTURE, DATE = "et302_2019-03-10.json.gz", "2019-03-10"
+
+    def test_lost_after_take_off(self):
+        self.first("LOST_CONTACT", "05:41:00", "05:45:00")
+
+
+class UA2005Replay(Incident, unittest.TestCase):
+    FIXTURE, DATE = "ua2005_2026-05-30.json.gz", "2026-05-30"
+    NOISE_BUDGET = HIGH_NOISE_BUDGET = 1  # one route-based OFF_COURSE
+
+    def test_hijack_squawk_7500(self):
+        self.first("EMERGENCY", "01:52:00", "01:53:00", "7500")
+
+    def test_turn_and_off_course(self):
+        self.first("COURSE_CHANGE", "01:53:00", "01:57:00")
+        self.first("OFF_COURSE", "01:56:00", "02:00:00", "KMSP")
+
+
+class QX2059Replay(Incident, unittest.TestCase):
+    FIXTURE, DATE = "qx2059_2023-10-23.json.gz", "2023-10-23"
+    NOISE_BUDGET = 15
+    HIGH_NOISE_BUDGET = 7  # today's routes on 2023 callsigns (ASA1383 "PDX arrival" landed at Seattle)
+
+    def test_turned_back_toward_portland(self):
+        self.first("COURSE_CHANGE", "01:06:00", "01:12:00")
+        self.first("OFF_COURSE", "01:07:00", "01:13:00", "KSFO")
+
+
+class F93345Replay(Incident, unittest.TestCase):
+    FIXTURE, DATE = "f93345_2026-06-01.json.gz", "2026-06-01"
+    NOISE_BUDGET = HIGH_NOISE_BUDGET = 5  # route-based OFF_COURSE on Miami traffic
+
+    def test_diversion_not_visible(self):
+        """No squawk and Miami within ~30 deg of Chicago: the monitor cannot tell (a limit)."""
+        self.assertFalse(self.focus, "\n" + replay.timeline(self.focus))
 
 
 if __name__ == "__main__":
