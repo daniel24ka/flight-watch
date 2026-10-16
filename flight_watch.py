@@ -124,13 +124,13 @@ LIGHT_CATEGORIES = {"A1", "A7", "B1", "B2", "B3", "B4", "B6"}
 PRIORITY = {"EMERGENCY": 5, "LOST_CONTACT": 5, "DIVERSION": 5, "TOWARD_ISRAEL": 5, "OFF_COURSE": 5,
             "RETURNED": 4, "TURNING_BACK": 4, "VERTICAL_RATE": 4, "SHARP_TURN": 4,
             "COURSE_CHANGE": 4, "HOLDING": 4, "POSITION_JUMP": 3, "GPS_SPOOFING": 3, "MASS_SILENCE": 3,
-            "GPS_DEGRADED": 3, "SKYDIVE_PATTERN": 5,
+            "GPS_DEGRADED": 3, "SKYDIVE_PATTERN": 5, "ALTITUDE_WOBBLE": 5, "EARLY_DESCENT": 5,
             "CONTACT_RESTORED": 2}
 # kinds that describe abnormal flying; two different ones on one flight within --hot-minutes
 # are reported as a pattern (priority 5)
 ANOMALIES = {"EMERGENCY", "LOST_CONTACT", "DIVERSION", "TOWARD_ISRAEL", "OFF_COURSE", "TURNING_BACK",
              "VERTICAL_RATE", "SHARP_TURN", "COURSE_CHANGE", "HOLDING", "POSITION_JUMP",
-             "SKYDIVE_PATTERN"}
+             "SKYDIVE_PATTERN", "ALTITUDE_WOBBLE", "EARLY_DESCENT"}
 
 # Airports in and around the watch area: terminal areas (normal turns, steep-but-normal climbs),
 # "probably landing there" for aircraft going silent low nearby. IATA -> (lat, lon, Israeli)
@@ -146,9 +146,25 @@ REGION_AIRPORTS = {
 }
 # a departure that climbed this high and landed back home is RETURNED however close it stayed
 RETURN_MIN_ALT = 10000
+# ALTITUDE_WOBBLE: an airliner's altitude up and down WOBBLE_TURNS times (each leg >= WOBBLE_FT) within
+# WOBBLE_S, below WOBBLE_MAX_ALT, its own vertical rate swinging both ways by >= WOBBLE_RATE (a lone bad
+# altitude is two reversals, with a steady rate). The 737 MAX crashes: JT610 (29 Oct 2018) 5-6 reversals
+# for 8 min, ET302 (10 Mar 2019) 4 before its data ended; FZ1073 (30 Sep 2026) 4. No other large aircraft
+# of the incident fixtures (619; ADS-B Exchange traces) reached 3, sampled every 10 s or from the trace.
+# A spread of the altitude's second difference ranked single glitches first (an A20N at FL380).
+WOBBLE_TURNS, WOBBLE_FT, WOBBLE_S, WOBBLE_MAX_ALT, WOBBLE_RATE = 3, 150, 180, 25000, 500
+# EARLY_DESCENT: an airliner descending EARLY_DROP ft below the height it climbed to (held on two
+# reports) within EARLY_MIN minutes of take-off. AS1282 (door plug, 6 Jan 2024) turned down at 16,300 ft
+# 7 min after take-off at ~2,000 ft/min, neither steep nor fast; the first descent of the other 184
+# large-aircraft take-offs in the fixtures came later (a 400 ft step by an E75L at 9.6 min).
+EARLY_DROP, EARLY_MIN = 1000, 10
 # conditions that last while a flight keeps flying the same way: repeated every --repeat-minutes, not
 # every --cooldown (6 Oct 2026: one tanker over Israel for 75 min gave 15 TOWARD_ISRAEL alerts)
 PERSISTING = {"TOWARD_ISRAEL", "OFF_COURSE", "TURNING_BACK"}
+# A turn alert on an aircraft with no route that is not an airliner, within PATTERN_S of its last one (and
+# no other anomaly) is only logged: survey / patrol lines. 14 Oct 2026: G-FPLD (CLB230, BE20) and 4X-CVH
+# (BDK09, G280) flew back and forth for hours west of Israel: 12 of 13 COURSE_CHANGEs, 3 of 4 SHARP_TURNs.
+TURN_KINDS, PATTERN_S = {"COURSE_CHANGE", "SHARP_TURN"}, 7200
 # GPS spoofing (Monitor.spoofed): an aircraft reported motionless at altitude is spoofed unless it
 # climbs / descends at least this fast (a stall or spin falls 10,000+ ft/min) - then it is checked.
 SPOOF_MAX_RATE = 6000
@@ -311,6 +327,19 @@ def airline_like(t: "Track") -> bool:
     cs = (t.callsign or "").upper()
     return (re.fullmatch(r"[A-Z]{3}\d[0-9A-Z]{0,3}", cs) is not None
             and cs != t.reg.replace("-", "").upper())
+
+
+def reversals(alts: list, h: float) -> int:
+    """Changes of direction in a series, each leg at least h (smaller wiggles ignored)."""
+    n, ext, d = 0, alts[0], 0
+    for x in alts[1:]:
+        if d == 0:
+            d, ext = (1, x) if x >= ext + h else (-1, x) if x <= ext - h else (0, ext)
+        elif (x - ext) * d > 0:
+            ext = x  # further the same way
+        elif abs(x - ext) >= h:
+            d, ext, n = -d, x, n + 1
+    return n
 
 
 def iata_flight(callsign: str) -> str | None:
@@ -671,6 +700,8 @@ class Track:
     leg_start: float = 0.0   # data time its callsign last changed: course checks use only what came after
     nic_bad: Sample | None = None  # its last NIC-0 report dropped as out of reach (see integrity)
     amm_dep: float = 0.0     # data time it was last on the ground at Amman / first heard climbing out of it
+    takeoff: float = 0.0     # data time of its take-off (left the ground, or first heard climbing low)
+    climb_peak: int = 0      # highest altitude since take-off held on two reports in a row (EARLY_DESCENT)
 
     @property
     def last(self) -> Sample | None:
@@ -682,6 +713,18 @@ class Track:
             parts.append(self.sched.flight)
         parts += [p for p in (self.reg, self.actype) if p]
         return " / ".join(parts)
+
+    @property
+    def large(self) -> bool:
+        return self.category in LARGE_CATEGORIES or bool(LARGE_TYPES.fullmatch(self.actype or ""))
+
+    def position_only(self, span: float = 600) -> bool:
+        """No speed nor track of its own for `span` s: positions only (MLAT, ground receivers' timing; no
+        ADS-B velocity). Their solutions jump 10-56 nm and drop out for minutes: on 14 Oct 2026 such tracks
+        (an Israeli military GLF5 "676" at FL350, Jordanian military trainers over the Jordan valley) gave
+        59 of 63 POSITION_JUMPs and 46 of 82 LOST_CONTACTs."""
+        s = self.last
+        return bool(s) and all(x.gs is None and x.track is None for x in self.samples if s.t - x.t <= span)
 
     def sample_ago(self, seconds: float) -> Sample | None:
         """Most recent sample at least `seconds` old (but not much older)."""
@@ -937,6 +980,8 @@ class Announcer:
                  "SHARP_TURN": ("\U0001f504", "Sharp turn"),
                  "COURSE_CHANGE": ("\U0001f504", "Course reversal"),
                  "HOLDING": ("⏳", "Holding unusually long"),
+                 "ALTITUDE_WOBBLE": ("〰️", "Altitude going up and down"),
+                 "EARLY_DESCENT": ("⬇️", "Descending soon after take-off"),
                  "POSITION_JUMP": ("\U0001f6f0️", "Position jump (GPS spoofing?)"),
                  "GPS_SPOOFING": ("\U0001f6f0️", "GPS spoofing"),
                  "MASS_SILENCE": ("\U0001f4e1", "Many aircraft silent at once"),
@@ -1004,7 +1049,8 @@ class Announcer:
              "TOWARD_ISRAEL": "turn toward Israel", "OFF_COURSE": "off course", "TURNING_BACK": "turning back",
              "VERTICAL_RATE": "steep climb/descent", "SHARP_TURN": "sharp turn",
              "COURSE_CHANGE": "course reversal", "HOLDING": "long holding", "POSITION_JUMP": "position jump",
-             "SKYDIVE_PATTERN": "skydiving pattern"}
+             "SKYDIVE_PATTERN": "skydiving pattern", "ALTITUDE_WOBBLE": "altitude up and down",
+             "EARLY_DESCENT": "early descent"}
     DETAILS = {  # kind -> (pattern in the alert message, compact wording)
         "LOST_CONTACT": (r"silent (\d+)s.*?track (\S+) deg", "silent {0} s, last track {1}°"),
         "VERTICAL_RATE": (r"([+-]\d+) ft/min, (-?[\d.]+) deg", "{0} ft/min ({1}°)"),
@@ -1616,9 +1662,17 @@ class Monitor:
         if (s.on_ground and amm < 5) or (len(t.samples) <= 2 and amm < 15 and (s.alt or 0) < 8000
                                          and (s.vrate or 0) > 300):
             t.amm_dep = s.t  # (first heard climbing out: the ground at Amman is often not covered)
+        if s.on_ground and (s.gs is None or s.gs < 50):
+            t.takeoff = 0.0
+        elif not s.on_ground and not t.takeoff and not t.was_airborne and (
+                (prev is not None and prev.on_ground)
+                or (prev is None and (s.alt or 0) < 2000 and (s.vrate or 0) > 0)):
+            t.takeoff, t.climb_peak = s.t, s.alt or 0
         self.check_emergency(t, ac)
         self.check_skydive(t)  # before check_vrate, so the dive's alert says what it is
         self.check_vrate(t)
+        self.check_wobble(t)
+        self.check_early_descent(t)
         self.check_turn(t)
         self.check_sharp_turn(t)
         self.check_holding(t)
@@ -1829,7 +1883,7 @@ class Monitor:
         ang = f", {angle:+.1f} deg" if angle is not None else ""
         near = f", {ad:.0f} nm from {apt}" if terminal else ""
         # the limits are an airliner's: said, not changed, for those that fly steeper as a matter of course
-        large = t.category in LARGE_CATEGORIES or bool(LARGE_TYPES.fullmatch(t.actype or ""))
+        large = t.large
         who = (" [military aircraft: steep profiles are routine]" if t.military else
                " [light / private aircraft: steeper than an airliner is common]"
                if not airline_like(t) and not large else "")
@@ -1837,6 +1891,40 @@ class Monitor:
             who += f" [MLAT position: speed {self.gs_from or 'unknown'}, the angle is less certain]"
         self.alert(t, "VERTICAL_RATE", f"{direction} {s.vrate:+d} ft/min{ang} at {s.alt} ft{near}{extra}{who}",
                    key=f"VERTICAL_RATE:{direction}", severity=abs(s.vrate))
+
+    def check_wobble(self, t: Track) -> None:
+        """An airliner's altitude going up and down again and again: a fight with the flight controls
+        (see WOBBLE_TURNS)."""
+        s = t.last
+        if (s.on_ground or s.alt is None or not 500 <= s.alt <= WOBBLE_MAX_ALT or t.military
+                or not airline_like(t) or not t.large):
+            return
+        # (an airborne 0 is a take-off roll's reading: ET302's at Addis Ababa, 2,300 m up)
+        win = [x for x in t.samples if s.t - x.t <= WOBBLE_S and not x.on_ground and x.alt]
+        rates = [x.vrate for x in win if x.vrate is not None]
+        if len(win) < 5 or max(rates, default=0) < WOBBLE_RATE or min(rates, default=0) > -WOBBLE_RATE:
+            return
+        turns = reversals([x.alt for x in win], WOBBLE_FT)
+        lo, hi = min(x.alt for x in win), max(x.alt for x in win)
+        if turns >= WOBBLE_TURNS:
+            self.alert(t, "ALTITUDE_WOBBLE", f"altitude up and down {turns} times in {s.t - win[0].t:.0f}s "
+                       f"({lo}-{hi} ft, vertical rate {min(rates):+d} to {max(rates):+d} ft/min) at {s.alt} ft "
+                       "- unsteady flight (JT610, ET302 before their crashes)", severity=turns)
+
+    def check_early_descent(self, t: Track) -> None:
+        """An airliner descending soon after take-off, before any cruise (see EARLY_DROP)."""
+        s = t.last
+        if not t.takeoff or s.on_ground or s.alt is None or s.t - t.takeoff > EARLY_MIN * 60 or len(t.samples) < 2:
+            return
+        p = t.samples[-2]
+        if p.on_ground or p.alt is None:
+            return
+        drop = t.climb_peak - s.alt
+        t.climb_peak = max(t.climb_peak, min(s.alt, p.alt))
+        if drop >= EARLY_DROP and s.alt <= p.alt and airline_like(t) and t.large and not t.military:
+            self.alert(t, "EARLY_DESCENT", f"descending {s.vrate if s.vrate is not None else '?'} ft/min, "
+                       f"{drop} ft below the {t.climb_peak} ft it climbed to, {(s.t - t.takeoff) / 60:.0f} min "
+                       "after take-off - departures do not turn down this early (AS1282)")
 
     def trusted_gs(self, t: Track) -> float | None:
         """Ground speed fit for judging a climb / descent angle, else None (then only the --vrate
@@ -1963,7 +2051,7 @@ class Monitor:
         slow = min(x.gs for x in run)
         model = JUMP_PLANES.get(t.actype, t.actype or "unknown type")
         t.skydive = {"t": s.t, "top": top, "gs": round(slow), "lift": t.skydive_lifts, "model": model}
-        large = t.category in LARGE_CATEGORIES or bool(LARGE_TYPES.fullmatch(t.actype or ""))
+        large = t.large
         why = ("an airliner" if airline_like(t) else "a large aircraft") if (airline_like(t) or large) else ""
         if why and not t.military:
             self.alert(t, "SKYDIVE_PATTERN", f"{why} ({model}) flew a skydiving pattern: {slow:.0f} kt at "
@@ -2005,8 +2093,9 @@ class Monitor:
     def check_sharp_turn(self, t: Track) -> None:
         """Turn tighter than airliners fly (implied bank angle), anywhere - also near airports."""
         a, s = self.args, t.last
-        if s.on_ground or s.track is None or not s.gs or s.gs < 150 or (s.alt or 0) < 1500:
-            return
+        if (s.on_ground or s.track is None or not s.gs or s.gs < 150 or (s.alt or 0) < 1500
+                or s.gs > a.max_gap_speed):
+            return  # (faster than any airliner flies: a bad speed - THY6219 "843 kt" at 8,700 ft, 14 Oct 2026)
         old = t.sample_ago(25)
         if not old or old.track is None or not old.gs:
             return
@@ -2042,6 +2131,10 @@ class Monitor:
         if dt <= 0 or d < 2:
             return
         kt = d / (dt / 3600)
+        if t.position_only() and not self.hot(t):
+            log.info("%s position-only track (MLAT) moved %.1f nm in %.0fs - receiver geometry, not alerted",
+                     t.label(), d, dt)
+            return
         # Over a long gap position noise is negligible, so the limit is what an aircraft can
         # average (airliner ground-speed record ~700 kt); military jets keep the looser limit.
         gap_limit = self.args.max_speed if t.military else self.args.max_gap_speed
@@ -2242,6 +2335,9 @@ class Monitor:
         apt, ad = nearest_airport(s.lat, s.lon, israeli=False)
         if ad < 40 and (s.vrate or 0) < -300:
             return  # descending into its own (non-Israeli) airport
+        if ad < 15 and s.alt < 10000:
+            return  # manoeuvring in a (non-Israeli) airport's terminal area: DNA541 (route unknown), 14 Oct 2026,
+            #         level at 8,925 ft turning onto its approach 11 nm from Damascus, landed 3 min later
         if self.amman_traffic(t):
             return
         if self.toward_own_airport(t):
@@ -2343,6 +2439,10 @@ class Monitor:
                                                or (s.vrate or 0) > -500 and (s.alt or 0) >= 20000):
                 # cruising far away (or a departure descending into its destination): coverage gap
                 log.info("%s silent %.0fs, %s - remote coverage gap, not alerted",
+                         t.label(), silent, where)
+                continue
+            if t.position_only() and not plunging and not self.hot(t):
+                log.info("%s silent %.0fs, %s - position-only track (MLAT coverage), not alerted",
                          t.label(), silent, where)
                 continue
             # (not alerted - e.g. part of a spoofing episode - means no "restored" later either)
@@ -2632,6 +2732,14 @@ class Monitor:
             return False
         traffic, route = self.classify(t)
         if a.airport_traffic_only and traffic not in AIRPORT_TRAFFIC:
+            return False
+        if kind in TURN_KINDS and not (t.large or t.sched or route) and any(
+                k.split(":")[0] in TURN_KINDS and now - tt <= PATTERN_S for k, (tt, _) in t.alerted.items()) and not any(
+                k.split(":")[0] in ANOMALIES - TURN_KINDS and now - tt <= a.hot_minutes * 60
+                for k, (tt, _) in t.alerted.items()):
+            log.info("%s %s - turning again within %.0f h of its last turn alert, no route, not an airliner: "
+                     "flying a pattern (survey, patrol, training), not alerted: %s", t.label(), kind,
+                     PATTERN_S / 3600, msg)
             return False
         recent = sorted({k.split(":")[0] for k, (tt, _) in t.alerted.items()
                          if now - tt <= a.hot_minutes * 60 and k.split(":")[0] in ANOMALIES} - {kind})

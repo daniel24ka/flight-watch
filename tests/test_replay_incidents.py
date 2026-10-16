@@ -11,12 +11,15 @@ other aircraft today - lower it as tuning improves, never raise it casually.
   route of the day (`route_overrides`).
 - AS1282 (ASA1282, N704AL, Portland -> Ontario), 6 Jan 2024, ADS-B Exchange history, 76 aircraft:
   door plug blown out at 16,000 ft at 01:14 UTC, back on the ground at Portland at 01:27. No
-  emergency squawk in ADS-B and never more than 29 nm from Portland: only RETURNED tells.
+  emergency squawk in ADS-B and never more than 29 nm from Portland: EARLY_DESCENT (turned down 7 min
+  after take-off) at 01:14, RETURNED at the landing.
 - MU5735 (CES5735, B-1791, Kunming -> Guangzhou), 21 Mar 2022, Flightradar24's granular data
   (ADS-B Exchange had no coverage there), imported with tools/import_track.py: dive from FL291 at
   06:20 UTC, last report 3,225 ft falling 31,000 ft/min.
 - ET302 (ETH302, ET-AVJ, Addis Ababa -> Nairobi), 10 Mar 2019, Flightradar24's granular data: the
-  data ends at 05:41:02 UTC, 8,600 ft, ~3 min before the crash; only LOST_CONTACT.
+  data ends at 05:41:02 UTC, 8,600 ft, ~3 min before the crash: ALTITUDE_WOBBLE at 05:40, LOST_CONTACT.
+- JT610 (LNI610, PK-LQP, Jakarta -> Pangkal Pinang), 28 Oct 2018 UTC, Flightradar24's granular data: the
+  altitude went up and down for 8 min after take-off (MCAS); ALTITUDE_WOBBLE from 23:25, the dive at 23:31.
 - UA2005 (UAL2005, N69818, Chicago -> Minneapolis), 30 May 2026 UTC, ADS-B Exchange history, 122
   aircraft around Madison: a passenger tried to breach the cockpit, squawk 7500 at 01:52:25, U-turn,
   landed at Madison 02:11.
@@ -109,10 +112,11 @@ class AS1282Replay(Incident, unittest.TestCase):
         a = self.first("RETURNED", "01:26:00", "01:30:00")
         self.assertIn("16275 ft", a["message"])
 
-    def test_nothing_before_the_landing(self):
-        """No squawk, a moderate descent and a return inside --off-course-min-dist: the landing
-        back is the first sign the monitor can give (a limit, recorded here)."""
-        early = [a for a in self.focus if a["time"] < f"{self.DATE}T01:26:00Z"]
+    def test_descending_soon_after_take_off(self):
+        """No squawk, a moderate descent (~2,000 ft/min) and a return inside --off-course-min-dist: only
+        turning down 7 min after take-off tells, 13 min before the landing back."""
+        a = self.first("EARLY_DESCENT", "01:14:00", "01:15:00")
+        early = [x for x in self.focus if x["time"] < a["time"]]
         self.assertFalse(early, "\n" + replay.timeline(early))
 
 
@@ -153,6 +157,19 @@ class ET302Replay(Incident, unittest.TestCase):
 
     def test_lost_after_take_off(self):
         self.first("LOST_CONTACT", "05:41:00", "05:45:00")
+
+    def test_altitude_wobble_before_the_data_ends(self):
+        self.first("ALTITUDE_WOBBLE", "05:39:30", "05:41:02")
+
+
+class JT610Replay(Incident, unittest.TestCase):
+    FIXTURE, DATE = "jt610_2018-10-29.json.gz", "2018-10-28"  # UTC (06:20 local, 29 Oct)
+
+    def test_altitude_wobble_minutes_before_the_crash(self):
+        self.first("ALTITUDE_WOBBLE", "23:24:00", "23:26:00")
+
+    def test_final_dive(self):
+        self.first("VERTICAL_RATE", "23:31:00", "23:32:00", "DESCENT")
 
 
 class UA2005Replay(Incident, unittest.TestCase):

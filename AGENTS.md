@@ -218,6 +218,16 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   positions over 1-3 min, and the alert says so. One set of limits for all (the owner: the simpler the
   better); alerts on military and on light / private aircraft carry a note that steep profiles are common
   there (4 of the 15 VERTICAL_RATE alerts on disk: GLF5 x2, C295, P750).
+- **ALTITUDE_WOBBLE / EARLY_DESCENT** (16 Oct 2026, from the incident fixtures; airline callsign and large
+  aircraft only). Wobble: the altitude reverses 3+ times (each leg >= 150 ft, `reversals`) within 3 min below
+  FL250, with the aircraft's own vertical rate both >= +500 and <= -500 (a lone bad altitude is 2 reversals with a
+  steady rate). JT610 23:25:05 UTC (crash 23:31), ET302 05:40:06 (data ends 05:41:02), FZ1073, AA77, UA93; no
+  other of 619 large aircraft reached 3 at 10 s polls or at trace resolution. The owner suggested the spread of
+  the altitude's second difference: it ranked single glitches first (an A20N at FL380) and missed ET302. A 30 s
+  window is too short (only JT610 reaches 3 in 60 s); the check uses the track's own samples, no extra requests.
+  Early descent: 1,000 ft below the climb's peak (held on two reports) within 10 min of take-off
+  (`Track.takeoff`: ground -> air, or first heard climbing below 2,000 ft). AS1282 01:14:24, 13 min before
+  RETURNED; of 184 large-aircraft take-offs the nearest was a 400 ft step by an E75L at 9.6 min.
 - **EMERGENCY**: alerts on squawk *transition* into 7500/7600/7700, not every cooldown.
 - **COURSE_CHANGE**: a large reversal (>= 70 deg in 2 min) above `--turn-min-alt`. Not
   reported within ~35 nm of a regional airport below FL250 (all 10 replay false alarms were
@@ -284,6 +294,15 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   every cycle instead of every `--follow-interval`, every anomaly reported (no terminal or
   route-corner exemptions), and two different anomalies within that time are sent at
   priority 5 with `[also: ...]`.
+- **Position-only tracks** (`Track.position_only`: no speed nor track of its own for 10 min - MLAT): no
+  POSITION_JUMP and no LOST_CONTACT (unless hot or falling), only logged. On 14 Oct 2026 an Israeli military
+  GLF5 ("676", callsign "@@@@@@@@") at FL350 and Jordanian military trainers (hex 7434xx, callsigns "BK", "DE",
+  "0") over the Jordan valley jumped 10-56 nm and dropped out: 59 of 63 POSITION_JUMPs, 46 of 82 LOST_CONTACTs.
+- **Pattern flying**: a COURSE_CHANGE / SHARP_TURN on an aircraft with no route that is not large, within 2 h
+  of its last turn alert and with no other anomaly, is only logged. 14 Oct 2026: G-FPLD (CLB230, BE20) and
+  4X-CVH (BDK09, G280) flew survey lines west of Israel for hours: 15 of 17 turn alerts (now 3). SHARP_TURN
+  ignores speeds above `--max-gap-speed` (THY6219 "843 kt"). TOWARD_ISRAEL skips aircraft below 10,000 ft
+  within 15 nm of a non-Israeli airport (DNA541 turning onto its approach at Damascus, route unknown).
 - **POSITION_JUMP**: implausible speed between consecutive positions **within 120 s**
   (`--max-speed` 1200 kt, loose because of position noise). After a longer gap the plane may
   just have moved while unheard, so only an impossible *average* counts: reappearing farther than

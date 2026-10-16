@@ -59,7 +59,8 @@ LEG_GAP, LOW_GAP, LOW_ALT = 6 * 3600, 45 * 60, 10000
 # (key, name, colour, 3D symbol, map glyph, kinds); a kind in none of them goes to "other"
 GROUPS = [
     ("emergency", "emergency squawk", "#8b0000", "square", "■", {"EMERGENCY"}),
-    ("altitude", "vertical rate / skydive", "#d62728", "diamond", "◆", {"VERTICAL_RATE", "SKYDIVE_PATTERN"}),
+    ("altitude", "altitude (rate, wobble, early descent) / skydive", "#d62728", "diamond", "◆",
+     {"VERTICAL_RATE", "SKYDIVE_PATTERN", "ALTITUDE_WOBBLE", "EARLY_DESCENT"}),
     ("trace", "vertical rate in the trace, not alerted", "#9467bd", "diamond-open", "◇", {"TRACE_VERTICAL_RATE"}),
     ("unwatched", "vertical rate in the trace, monitor not running", "#a0a0a0", "circle", "●", {"TRACE_NO_MONITOR"}),
     ("course", "course / turn / heading", "#c2185b", "cross", "✚",

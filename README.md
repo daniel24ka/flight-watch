@@ -16,14 +16,16 @@ turning back, diversions, and flights not bound for Israel turning toward it.
 | `LOST_CONTACT` / `DIVERSION` | silent too long (also low down, when last heard falling at `--vrate` or faster); a TLV arrival on the ground elsewhere, or silent while descending near another airport | 5 |
 | `TURNING_BACK` / `RETURNED` | a TLV departure heads back toward TLV for 150 s while closing / lands back after reaching 40 nm or 10,000 ft | 4 |
 | `VERTICAL_RATE` | flight-path angle steeper than 10 deg descending or 12 deg climbing (18 deg climbing near airports), or > 8000 ft/min | 4 |
+| `ALTITUDE_WOBBLE` | an airliner's altitude up and down 3+ times (150 ft or more each way) within 3 min below 25,000 ft, its vertical rate swinging both ways (JT610, ET302) | 5 |
+| `EARLY_DESCENT` | an airliner descending 1,000 ft below the height it climbed to within 10 min of take-off (AS1282) | 5 |
 | `SHARP_TURN` | turn tighter than ~35 deg of bank (airliners stay below ~25-30), anywhere, also near airports | 4 |
-| `COURSE_CHANGE` | >= 70 deg in 2 min above 12000 ft, new track held 2 min - not S-turns, holding patterns / orbits, routine turns near airports or learned route corners | 4 |
+| `COURSE_CHANGE` | >= 70 deg in 2 min above 12000 ft, new track held 2 min - not S-turns, holding patterns / orbits, routine turns near airports or learned route corners; an aircraft with no route that is not an airliner gets one turn alert per 2 h (survey / patrol lines) | 4 |
 | `SKYDIVE_PATTERN` | an airliner or large aircraft flying a jump run (slow at height) then diving; a jump plane's own alerts are only labelled `[skydiving pattern, <model> ...]` | 5 |
 | `HOLDING` | an airliner circling over 30 min (again every 30 min) instead of landing; military and non-airline traffic not reported | 4 |
 | `GPS_SPOOFING` | aircraft reported motionless in the air (impossible for a fixed-wing plane unless falling fast) at the same point: one alert per episode (`spoof-YYYYMMDDTHHMMZ`) and one when it ends; the position-based alerts it causes are logged under that label instead | 3 |
 | `MASS_SILENCE` | 3+ aircraft silent within 2 min of each other (reception, jamming, the onset of spoofing): one alert (`silence-YYYYMMDDTHHMMZ`) instead of a `LOST_CONTACT` each. Every loss now waits `--lost-confirm` (60 s) for this; heard again meanwhile = nothing | 3 |
 | `GPS_DEGRADED` | 3+ aircraft report they no longer trust their GPS position (NIC 0) within 2 min and 100 nm: one alert (`gps-YYYYMMDDTHHMMZ`) and one when it ends. A NIC-0 position the aircraft could not have reached is dropped without a jump alert | 3 |
-| `POSITION_JUMP` | impossible jump, reappearing too far after a gap, or one position off the track and back (GPS spoofing or bad data) | 3 |
+| `POSITION_JUMP` | impossible jump, reappearing too far after a gap, or one position off the track and back (GPS spoofing or bad data); not for position-only (MLAT) tracks, nor their losses of contact | 3 |
 | `CONTACT_RESTORED` | an alerted loss of contact ended | 2 |
 
 Any alert makes the flight followed and "hot" for `--hot-minutes` (20): it is then queried every
