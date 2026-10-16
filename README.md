@@ -19,8 +19,8 @@ turning back, diversions, and flights not bound for Israel turning toward it.
 | `ALTITUDE_WOBBLE` | an airliner's altitude up and down 3+ times (150 ft or more each way) within 3 min below 25,000 ft, its vertical rate swinging both ways (JT610, ET302) | 5 |
 | `EARLY_DESCENT` | an airliner descending 1,000 ft below the height it climbed to within 10 min of take-off (AS1282) | 5 |
 | `SHARP_TURN` | turn tighter than ~35 deg of bank (airliners stay below ~25-30), anywhere, also near airports | 4 |
-| `COURSE_CHANGE` | >= 70 deg in 2 min above 12000 ft, new track held 2 min - not S-turns, holding patterns / orbits, routine turns near airports or learned route corners; an aircraft with no route that is not an airliner gets one turn alert per 2 h (survey / patrol lines) | 4 |
-| `SKYDIVE_PATTERN` | an airliner or large aircraft flying a jump run (slow at height) then diving; a jump plane's own alerts are only labelled `[skydiving pattern, <model> ...]` | 5 |
+| `COURSE_CHANGE` | >= 70 deg in 2 min above 12000 ft, new track held 2 min - not S-turns, holding patterns / orbits, routine turns near airports or learned route corners, nor a turn onto the route's destination; an aircraft with no route that is not an airliner gets one turn alert per 2 h (survey / patrol lines) | 4 |
+| `SKYDIVE_PATTERN` | an airliner or large aircraft flying a jump run (slow at height) then diving; a jump plane's first dive is alerted ("probably a skydiving ride"), then nothing on it but an emergency squawk or a fall beyond `--vrate` until 3 h after its last lift | 5 |
 | `HOLDING` | an airliner circling over 30 min (again every 30 min) instead of landing; military and non-airline traffic not reported | 4 |
 | `GPS_SPOOFING` | aircraft reported motionless in the air (impossible for a fixed-wing plane unless falling fast) at the same point: one alert per episode (`spoof-YYYYMMDDTHHMMZ`) and one when it ends; the position-based alerts it causes are logged under that label instead | 3 |
 | `MASS_SILENCE` | 3+ aircraft silent within 2 min of each other (reception, jamming, the onset of spoofing): one alert (`silence-YYYYMMDDTHHMMZ`) instead of a `LOST_CONTACT` each. Every loss now waits `--lost-confirm` (60 s) for this; heard again meanwhile = nothing | 3 |
@@ -119,8 +119,10 @@ line per alert (Israel time, flight and airline, route when known, alert type), 
 `-v` shows the full log instead (a status line per cycle, rate limiting, flights followed) and
 the announcement feed; `-vv` adds debug detail. Alerts are appended to `alerts.jsonl` and posts to `posts.jsonl` in the current directory
 (`--jsonl ''` / `--posts ''` to disable). Telegram: set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`
-(a channel where the bot is an admin: `@name` or its `-100...` id; only admins can write there). `--telegram-skip`
-(`TELEGRAM_SKIP`; default `LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP`) leaves those kinds out of Telegram
+(a chat with the bot), or with `--telegram-to channel` (`monitor.sh`: `SENDTO=channel`, the default there) `TELEGRAM_CHANNEL_ID` (a channel where the
+bot is an admin: `@name` or its `-100...` id; only admins can write there). `--telegram-skip`
+(`TELEGRAM_SKIP`; default `LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP,GPS_DEGRADED`) leaves those kinds out of Telegram;
+it gets one `GPS_SPOOFING` start in 6 h and never an episode's end
 unless the flight also has an alert of another kind. Each message sent is also appended to
 `posts_telegram.jsonl` (`--telegram-posts`; `monitor.sh`: `posts_telegram_YYYY-MM-DD.jsonl`), `"sent": false` when Telegram refused it.
 

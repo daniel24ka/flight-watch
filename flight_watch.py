@@ -175,6 +175,13 @@ SPOOF_KINDS = {"POSITION_JUMP", "COURSE_CHANGE", "SHARP_TURN", "OFF_COURSE", "TU
 # while - then a steep descent. 4XDAN (P750) over the Dead Sea, 10 Oct 2026: climb to ~12,000 ft
 # every 20-40 min, ~50 kt while jumpers exit, then -5,600 ft/min at 150 kt out of coverage.
 SKYDIVE_RUN_KT, SKYDIVE_RUN_ALT, SKYDIVE_DESCENT = 80, 6000, 3000
+# A jump plane's skydiving is alerted once (the first VERTICAL_RATE of its lifts, as a sanity check of
+# the monitor); then, until SKYDIVE_QUIET_S after its last lift, only an emergency squawk. 4XDAN, 16 Oct
+# 2026: 13 alerts in 3 lifts (each a dive, lost contact low, heard again), 6 of them on Telegram.
+SKYDIVE_QUIET_S = 3 * 3600
+# Telegram gets one GPS_SPOOFING start in this long (s) and no GPS_DEGRADED (--telegram-skip): on
+# 16 Oct 2026 a NIC-0 episode near Amman went out twice (start, end) with nothing to see on the map
+TG_SPOOF_S = 6 * 3600
 # common jump aircraft (ICAO type -> model, for the alert text)
 JUMP_PLANES = {
     "P750": "PAC 750XL", "C208": "Cessna 208 Caravan", "PC6P": "Pilatus PC-6 Porter",
@@ -1137,8 +1144,10 @@ class Notifier:
         self.console = console or (print if not args.verbose else (lambda text: None))
         self.announcer = announcer or Announcer(args)
         self.tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
-        self.tg_chat = os.getenv("TELEGRAM_CHAT_ID")
+        self.tg_var = "TELEGRAM_CHANNEL_ID" if args.telegram_to == "channel" else "TELEGRAM_CHAT_ID"
+        self.tg_chat = os.getenv(self.tg_var)
         self.tg_skip = {k.strip().upper() for k in args.telegram_skip.split(",") if k.strip()}
+        self.tg_spoof_t = -1e12  # data time of the last GPS_SPOOFING sent to Telegram
 
     LINK_NAMES = {"map": "Map (flight-watch)", "fr24_flight": "FR24 flight", "fr24_aircraft": "FR24 aircraft",
                   "live_adsbx": "Live (ADSBx)", "live": "Live (airplanes.live)",
@@ -1179,6 +1188,14 @@ class Notifier:
     def telegram_wanted(self, rec: dict) -> bool:
         """--telegram-skip kinds are left out, unless the flight also did something not skipped
         ("[also: ...]": lost contact after a dive is sent, lost contact + position jump is not)."""
+        if rec["kind"] == "GPS_SPOOFING":
+            # jamming / spoofing is an every-day condition here, not news: the start of an episode,
+            # at most one in TG_SPOOF_S, and never the summary at its end
+            t = datetime.fromisoformat(rec["time"].replace("Z", "+00:00")).timestamp()
+            if " ended: " in rec["message"] or t - self.tg_spoof_t < TG_SPOOF_S:
+                return False
+            self.tg_spoof_t = t
+            return True
         if rec["kind"] not in self.tg_skip:
             return True
         also = re.search(r"\[also: ([^\]]+)\]", rec["message"])
@@ -2019,6 +2036,10 @@ class Monitor:
         elif (s.t - p["t"] >= a.turn_confirm and held and held[0].t <= s.t - a.turn_confirm * 0.8
               and all(heading_diff(x.track, s.track) <= 20 for x in held)):
             t.pending_turn = None
+            dest = self.turned_to_destination(t)
+            if dest:  # MEA312 Beirut - Amman, 16 Oct 2026: east past Damascus, then south to Amman
+                log.info("%s turned toward its destination %s, not alerted (%s)", t.label(), dest, p["msg"])
+                return
             self.alert(t, "COURSE_CHANGE", f"{p['msg']}; new track {s.track:.0f} held {a.turn_confirm:.0f}s")
         elif s.t - p["t"] > 600:
             t.pending_turn = None  # neither: no clear reversal
@@ -2050,12 +2071,16 @@ class Monitor:
         t.skydive_lifts += 1
         slow = min(x.gs for x in run)
         model = JUMP_PLANES.get(t.actype, t.actype or "unknown type")
-        t.skydive = {"t": s.t, "top": top, "gs": round(slow), "lift": t.skydive_lifts, "model": model}
+        rate = min(s.vrate or 0, computed or 0)
         large = t.large
         why = ("an airliner" if airline_like(t) else "a large aircraft") if (airline_like(t) or large) else ""
+        ride = not why and not t.military  # a jump plane: alerted once, then quiet (SKYDIVE_QUIET_S)
+        same = t.skydive and t.skydive.get("quiet") and s.t - t.skydive["t"] <= SKYDIVE_QUIET_S
+        t.skydive = {"t": s.t, "top": top, "gs": round(slow), "lift": t.skydive_lifts, "model": model,
+                     "quiet": ride, "told": bool(same and t.skydive["told"])}
         if why and not t.military:
             self.alert(t, "SKYDIVE_PATTERN", f"{why} ({model}) flew a skydiving pattern: {slow:.0f} kt at "
-                       f"{top} ft, then descending {min(s.vrate or 0, computed or 0):+.0f} ft/min at {s.alt} ft")
+                       f"{top} ft, then descending {rate:+.0f} ft/min at {s.alt} ft")
         else:
             log.info("%s skydiving lift %d: %s, %.0f kt at %d ft, descending at %d ft",
                      t.label(), t.skydive_lifts, model, slow, top, s.alt)
@@ -2267,6 +2292,18 @@ class Monitor:
             self.alert(t, "OFF_COURSE", f"bound for {dst} (route {self.routes[t.callsign][1]}) but heading "
                        f"{s.track:.0f} deg, {devs[-1]:.0f} deg away from it for {s.t - old.t:.0f}s, "
                        f"{d_dest:.0f} nm out and opening ({was_dest:.0f} -> {d_dest:.0f} nm)")
+
+    def turned_to_destination(self, t: Track) -> str | None:
+        """ICAO of the route's destination when the flight now points at it (--toward-dest-tol): a
+        route's turn, not a reversal. Not after the flight was seen flying the route backwards."""
+        ends, s = self.route_ends(t), t.last
+        if len(ends) < 2 or t.route_dir < 0:
+            return None
+        icao, lat, lon = ends[-1]
+        if (haversine_nm(s.lat, s.lon, lat, lon) > 20
+                and heading_diff(s.track, bearing(s.lat, s.lon, lat, lon)) <= self.args.toward_dest_tol):
+            return icao
+        return None
 
     def descending_toward(self, t: Track) -> str | None:
         """A regional airport <= 150 nm ahead (within --toward-dest-tol) of a flight descending
@@ -2730,6 +2767,18 @@ class Monitor:
         cooldown = a.repeat_minutes * 60 if kind in PERSISTING else a.cooldown
         if not (force or escalated or kind == "CONTACT_RESTORED") and now - last_t < cooldown:
             return False
+        k = t.skydive
+        # a fall at --vrate or faster is no jump-plane dive (4XDAN's: -4,200 to -5,700 ft/min): a spin or a
+        # loss of control, and the silence after it ("falling", Monitor.plunging) - alerted
+        falling = (kind == "VERTICAL_RATE" and key.endswith("DESCENT") and severity >= a.vrate
+                   or kind == "LOST_CONTACT" and "falling" in msg)
+        if k and k.get("quiet") and now - k["t"] <= SKYDIVE_QUIET_S and kind != "EMERGENCY" and not falling:
+            if k["told"] or kind != "VERTICAL_RATE":
+                log.info("%s %s - skydiving rides (lift %d), not alerted: %s", t.label(), kind, k["lift"], msg)
+                return False
+            k["told"] = True  # its first dive is alerted, as a check that the monitor sees them
+            msg += (f" - probably a skydiving ride; no further alerts on it until {SKYDIVE_QUIET_S / 3600:.0f} h "
+                    "after its last lift, except an emergency squawk")
         traffic, route = self.classify(t)
         if a.airport_traffic_only and traffic not in AIRPORT_TRAFFIC:
             return False
@@ -2908,9 +2957,11 @@ def parse_args(argv=None):
                    help="our flight map page, linked from alerts and posts as 'Map' ('' to leave out)")
     g.add_argument("--thread-hours", type=float, default=6,
                    help="later alerts on a flight reply to its thread for this long")
-    g.add_argument("--telegram-skip", default=os.getenv("TELEGRAM_SKIP", "LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP"),
+    g.add_argument("--telegram-skip", default=os.getenv("TELEGRAM_SKIP", "LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP,GPS_DEGRADED"),
                    help="alert kinds not sent to Telegram (still in the files and ntfy), unless the "
                         "flight also has an alert of another kind ('' sends everything)")
+    g.add_argument("--telegram-to", choices=("chat", "channel"), default="chat",
+                   help="chat: TELEGRAM_CHAT_ID (a chat with the bot); channel: TELEGRAM_CHANNEL_ID (the public channel)")
     g.add_argument("--telegram-posts", default="posts_telegram.jsonl",
                    help="append each message sent to Telegram here ('' to disable)")
     g.add_argument("--ntfy-topic", default=os.getenv("NTFY_TOPIC"), help="ntfy topic name")
@@ -2972,7 +3023,7 @@ def main(argv=None) -> None:
     log.info("watching %s (%s) r=%.0fnm every %.0fs via %s",
              args.airport, args.icao, args.radius, args.interval, args.provider)
     tg = monitor.notifier  # said at the start: unset (not exported) variables otherwise fail silently
-    missing = [n for n, v in (("TELEGRAM_BOT_TOKEN", tg.tg_token), ("TELEGRAM_CHAT_ID", tg.tg_chat)) if not v]
+    missing = [n for n, v in (("TELEGRAM_BOT_TOKEN", tg.tg_token), (tg.tg_var, tg.tg_chat)) if not v]
     telegram = ("Telegram off (" + ", ".join(missing) + " not in the environment)" if missing else
                 "Telegram on" + (", without " + ", ".join(sorted(tg.tg_skip)) if tg.tg_skip else ""))
     log.info(telegram)

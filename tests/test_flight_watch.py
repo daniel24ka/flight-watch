@@ -16,7 +16,7 @@ import requests
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import flight_watch as fw  # noqa: E402
 
-for _name in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_SKIP"):
+for _name in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_CHANNEL_ID", "TELEGRAM_SKIP"):
     os.environ.pop(_name, None)  # the owner's shell has them: tests must not use the real bot
 
 TLV = (32.0114, 34.8867)
@@ -837,6 +837,31 @@ class SkydiveTests(unittest.TestCase):
         self.assertIn("skydiving pattern, PAC 750XL: 55 kt at 11800 ft", alerts[0]["message"])
         self.assertEqual(alerts[0]["skydive"]["lift"], 1)
 
+    def test_rides_are_alerted_once_then_only_an_emergency(self):
+        """4XDAN, 16 Oct 2026: 3 lifts gave 13 alerts (dives, silences low, heard again)."""
+        mon, feed, clock, alerts = make(["--no-routes"])
+        ident = dict(flight="4XDAN", r="4X-DAN", t="P750", category="A1")
+        end = lift()[-1]
+        climb = path(end["lat"], end["lon"], [5] * 60, [8500 + 55 * i for i in range(60)], gs=100)
+        second = lift()
+        fly(mon, feed, clock, "739215", lift() + climb + second, **ident)
+        fly(mon, feed, clock, "739215", [{**second[-1], "squawk": "7700"}] * 2, **ident)
+        self.assertEqual(kinds(alerts), ["VERTICAL_RATE", "EMERGENCY"])
+        self.assertIn("probably a skydiving ride", alerts[0]["message"])
+        self.assertEqual(mon.tracks["739215"].skydive["lift"], 2)
+
+    def test_a_fall_beyond_vrate_on_a_ride_is_alerted(self):
+        """A spin, not a jump-plane dive: -12,000 ft/min after the ride's first alert."""
+        mon, feed, clock, alerts = make(["--no-routes"])
+        ident = dict(flight="4XDAN", r="4X-DAN", t="P750", category="A1")
+        first = lift()
+        end = first[-1]
+        fall = path(end["lat"], end["lon"], [190] * 4, [end["alt_baro"] - 2000 * i for i in range(1, 5)], gs=150)
+        fall = [{**st, "baro_rate": -12000} for st in fall]
+        fly(mon, feed, clock, "739215", first + fall, **ident)
+        self.assertEqual(kinds(alerts), ["VERTICAL_RATE", "VERTICAL_RATE"])
+        self.assertIn("-12000", alerts[1]["message"])
+
     def test_airliner_flying_it_is_priority_5(self):
         mon, feed, clock, alerts = make(["--no-routes"])
         fly(mon, feed, clock, "738001", lift(), flight="ELY315", r="4X-EKT", t="B738")
@@ -1007,6 +1032,15 @@ class SteepnessTests(unittest.TestCase):
 
 
 class TurnTests(unittest.TestCase):
+    def test_turn_onto_the_destination_is_not_a_reversal(self):
+        """MEA312 Beirut - Amman, 16 Oct 2026: east past Damascus, then south to Amman."""
+        tracks = [200] * 12 + [200 + 10 * i for i in range(1, 12)] + [310] * 16  # over Iraq, toward Istanbul
+        for callsign, expect in (("UAE121", False), ("UAE122", True)):  # OMDB-LTFM / LTFM-OMDB
+            mon, feed, clock, alerts = with_routes()
+            fly(mon, feed, clock, "896121", path(33.0, 43.0, tracks, [37000] * len(tracks)), flight=callsign,
+                r="A6-EUA")
+            self.assertEqual("COURSE_CHANGE" in kinds(alerts), expect, callsign)
+
     def test_sharp_turn(self):
         mon, feed, clock, alerts = make(["--no-routes"])
         tracks = [90] * 6 + [120, 150, 180] + [180] * 5  # 90 deg in 30 s at 450 kt: ~50 deg bank
@@ -1667,6 +1701,26 @@ class AnnouncerTests(unittest.TestCase):
                          "08:00:00  SHUFL (military)  POSITION_JUMP")
         quiet = fw.Announcer(args)  # without -v the feed goes to posts.jsonl only
         self.assertIsNotNone(quiet.announce(alert_rec("EMERGENCY", "squawk 7700 (GENERAL EMERGENCY)")))
+
+    def test_telegram_gets_one_spoofing_start_in_six_hours(self):
+        class Sent:
+            calls = []
+
+            def post(self, url, **kw):
+                self.calls.append(kw["json"])
+        args = fw.parse_args(["--jsonl", "", "--posts", "", "--turn-zones", "", "--telegram-posts", ""])
+        http = Sent()
+        with mock.patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "@c"}):
+            n = fw.Notifier(args, http, fw.Announcer(args, out=lambda text: None), console=lambda text: None)
+        kw = dict(remote=False, traffic="ARR", route=None)
+        n.send(alert_rec("GPS_DEGRADED", "gps-20260930T0500Z: 3 aircraft report ... (NIC 0)", **kw))
+        n.send(alert_rec("GPS_SPOOFING", "spoof-20260930T0500Z: 2 aircraft reported motionless", **kw))
+        n.send(alert_rec("GPS_SPOOFING", "spoof-20260930T0500Z ended: 2 aircraft reported", minute=20, **kw))
+        n.send(alert_rec("GPS_SPOOFING", "spoof-20260930T0540Z: 2 aircraft reported motionless", minute=40, **kw))
+        self.assertEqual(len(http.calls), 1)
+        n.send(alert_rec("GPS_SPOOFING", "spoof-20260930T1200Z: 2 aircraft reported motionless",
+                         time="2026-09-30T12:00:00Z", **kw))
+        self.assertEqual(len(http.calls), 2)
 
     def test_telegram_skips_common_kinds_and_sends_the_post_wording(self):
         class Sent:

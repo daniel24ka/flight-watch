@@ -77,7 +77,9 @@ a trace: live for 20 min after the alert, then the replay. A replay shows one UT
 
 **Flight pages** (`docs/flights.html`, `docs/flight_map.html`, shared `docs/flightboard.js`;
 local helper `tools/serve.py`): the board table and a live map of one flight, processed in the
-browser. The owner wants the browser (JS) and the monitor (Python) to process alike: the JS
+browser. `flight_map.html` is not the incident pages' viewer (`plot_alert.py`), but draws the track at its
+height the same way (x 3 above sea level, `x=` / slider), tilts to 85 deg, and has "show terrain" (`terrain=1`,
+the same terrarium tiles and decoding; 16 Oct 2026: the owner missed tilting low to see heights). The owner wants the browser (JS) and the monitor (Python) to process alike: the JS
 board logic is a port of `Schedule.load` (slot grouping - one airline with two numbers in a slot is two flights:
 ENT238 and ENT368 from KTW were both due 04:00 on 14 Oct 2026, and SP-ESD flying ENT368 was taken as ENT238 -, lowest flight number = operating carrier,
 callsign variants), `FB.AIRLINE_ICAO` is a copy of `AIRLINE_ICAO`, `FB.israelEpoch` reads board
@@ -241,12 +243,20 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   (circling). Circling is never a reversal, also when hot. OFF_COURSE / TURNING_BACK wait while a
   turn is pending and skip circling (the outbound half of an orbit flies away from TLV), unless hot.
   Cost: a real reversal on a flight that has not alerted yet is reported ~2 min later.
+  Not reported either when the held new track points at the route's destination (`turned_to_destination`,
+  `--toward-dest-tol`; MEA312 Beirut - Amman, 16 Oct 2026: east past Damascus, then 186 deg with Amman at 193).
+  Not after the flight was seen flying its route backwards (`route_dir` -1); a route stored the wrong way round
+  and not yet learned would hide a turn back to the origin.
 - **SKYDIVE_PATTERN**: a jump run (>= 2 reports <= 80 kt at >= 6,000 ft over >= 15 s, positions
   agreeing) followed within 5 min by a descent of >= 3,000 ft/min and >= 1,000 ft. 4XDAN (P750) over
   the Dead Sea, 10 Oct 2026: a lift every ~40 min (climb to ~12,000 ft, ~50 kt while jumpers exit,
   -5,600 ft/min at 150 kt, silent below ~7,000 ft), each giving VERTICAL_RATE + LOST_CONTACT. The owner
-  wants those alerts kept: they carry `[skydiving pattern, <model>: ...; lift N]` and the record's
-  `skydive` for 30 min (model from `JUMP_PLANES`, else the type code). An airline callsign or a large
+  wanted those alerts kept: they carry `[skydiving pattern, <model>: ...; lift N]` and the record's
+  `skydive` for 30 min (model from `JUMP_PLANES`, else the type code). 16 Oct 2026, 4XDAN again: 13 alerts in 3
+  lifts, 6 on Telegram; the owner now wants one: a jump plane's first VERTICAL_RATE ("probably a skydiving ride",
+  a sanity check that the monitor sees it), then until `SKYDIVE_QUIET_S` (3 h) after its last lift only EMERGENCY
+  and a fall at `--vrate` or faster (VERTICAL_RATE, LOST_CONTACT "falling": a spin, not its -4,200 to -5,700 ft/min
+  dives). Cost: an accident at a normal rate or below coverage (it goes silent below ~7,000 ft) is only logged. An airline callsign or a large
   aircraft (category A3-A5 or `LARGE_TYPES`) flying it is alerted at priority 5 (near-stall flight at
   height, then a dive); military transports drop paratroopers and are only described.
 - **HOLDING**: an airliner (airline callsign, not military) circling - >= 330 deg of turn one way
@@ -377,8 +387,13 @@ link in posts, which then leave out Live; with `t` the page shows the flight of 
 placed at the alert; a live link opened later shows whatever the aircraft flies then). ADS-B Exchange replays proved more reliable for older
 days than airplanes.live, which showed "No data". Tapping an ntfy notification opens live ADSBx.
 Telegram gets the post's wording as HTML (`Notifier.telegram_text`), without `--telegram-skip` kinds
-(LOST_CONTACT, CONTACT_RESTORED, POSITION_JUMP: 355 of 429 alerts in the run of 10-11 Oct 2026) unless
-the message's `[also: ...]` names another kind; 83 of the 429 would have been sent.
+(LOST_CONTACT, CONTACT_RESTORED, POSITION_JUMP: 355 of 429 alerts in the run of 10-11 Oct 2026; GPS_DEGRADED) unless
+the message's `[also: ...]` names another kind; 83 of the 429 would have been sent. Jamming / spoofing is daily here:
+NIC 0 is the aircraft saying it does not trust its GPS, while it flies on inertial and its track looks normal (16 Oct
+2026: an episode near Amman went out as a start and an end with nothing to see on the map). So GPS_DEGRADED is skipped,
+and GPS_SPOOFING sends one start in `TG_SPOOF_S` (6 h) and never an end; all stay in the files.
+`--telegram-to chat|channel` picks `TELEGRAM_CHAT_ID` (default) or `TELEGRAM_CHANNEL_ID` (the public, read-only
+channel); `monitor.sh` sets it from `SENDTO` (channel).
 Each message is also appended to `--telegram-posts` (`posts_telegram.jsonl`, with `sent`), apart from `posts.jsonl`.
 
 ## Testing
