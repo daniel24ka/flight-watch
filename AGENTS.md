@@ -46,8 +46,12 @@ steep changes / altitude data glitches (shown unless switched off), an "alerts a
 time and the first detection (the monitor's VERTICAL_RATE check run on every trace report: when it could
 first have alerted; the lag is in the tooltip; dives that pass it with no alert are drawn as "not alerted", or
 "no monitor" (another marker) outside the alert file's span - 4XDAN 10 Oct 2026: 4 dives while the monitor
-ran, 2 alerted, polls refused with HTTP 429 half the time). Map pages take link options (`view=lat,lon,zoom,pitch,bearing,height`,
-`x=` altitude ×, `go=alerts|first|top`, `zone=UTC|local`, `embed=1`: the map and credits only, for iframes) and a "link to
+ran, 2 alerted, polls refused with HTTP 429 half the time). The map is flat at the height of the airfield nearest the alert (within 40 nm, else sea level) and
+darkened so the yellow track shows; "show terrain" / `terrain=1` draws the ground's heights (AWS terrarium tiles,
+slower: off at first, 16 Oct 2026). Heights are exaggerated above that airfield, not sea level (ET302: Addis
+Ababa at 2,326 m), and a track lower than its own airfield (pressure altitude) is raised to it (`on_terrain`).
+Map pages take link options (`view=lat,lon,zoom,pitch,bearing,height` (m above sea level),
+`x=` altitude ×, `terrain=1`, `go=alerts|first|top`, `zone=UTC|local`, `embed=1`: the map and credits only, for iframes) and a "link to
 this view" button that copies them; `docs/incidents.html` (Hebrew, 14 Oct 2026, by date) embeds the incident maps that way, with each flight's data source
 and a share image (`incidents_preview.png`, 1200x630, og / twitter tags; absolute Pages URLs). Map labels are HTML laid out on screen after
 every frame (beside their marker, moved apart with a line back where they would overlap), and must keep the credits:

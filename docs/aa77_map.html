@@ -28,7 +28,8 @@ body.embed #helpbtn,body.embed #viewlink{display:none}</style>
 <span style="color:#ff9900">━ position jumps</span>
 <span style="color:#888">╌ no data &gt; 120 s</span>
 · altitude ×<input id="zx" type="range" min="1" max="20" value="5" style="vertical-align:middle;width:110px"><b
-id="zxv">5</b> <button id="zoomin">zoom to alerts</button> <button id="top">top view</button>
+id="zxv">5</b> <button id="terrainbtn" title="the ground's heights (loads more slowly)">show terrain</button>
+<button id="zoomin">zoom to alerts</button> <button id="top">top view</button>
 <button id="reset">whole flight</button>
 <button id="helpbtn">? how to move</button> <button id="viewlink" title="copy a link that opens the map at this
 view (for posts and iframes)">link to this view</button></div>
@@ -48,9 +49,11 @@ to the start.<br>
 • Hover a point or line for details; hover the chart below the map to put a black dot on that moment.<br>
 • <b>times</b> (top): Israel time, UTC or your computer's time zone.<br>
 • The altitude slider stretches heights so climbs and dives are visible (×1 is true scale).<br>
+• <b>show terrain</b> draws the ground's hills and valleys (slower to load). Without it the map is flat, at the
+height of the airfield nearest the alerts.<br>
 • <b>link to this view</b> copies a link that opens the map as it is now. Link options:
 <code>view=lat,lon,zoom,pitch,bearing,height</code> (height in m, where the camera aims),
-<code>x=</code> altitude ×, <code>go=alerts|first|top</code>, <code>zone=UTC|local</code>,
+<code>x=</code> altitude ×, <code>terrain=1</code>, <code>go=alerts|first|top</code>, <code>zone=UTC|local</code>,
 <code>embed=1</code> (map only, for an iframe).</div>
 <div id="d3" style="height:640px"></div>
 <div class="legend">chart below: <button class="cz tz" data-i="0" data-raw="whole flight">whole flight</button> <button class="cz tz" data-i="1" data-raw="alerts">alerts</button> · drag across it to zoom in, double-click to zoom out</div>
@@ -158,6 +161,10 @@ document.querySelectorAll("button.cz").forEach(b => b.onclick = () => {
 });
 
 let Z = Math.min(20, Math.max(1, +Q.get("x") || 5)), cursor = null;
+// terrain off at first (the flat map loads much faster); the button or terrain=1 turns it on
+let TERRAIN = Q.get("terrain") === "1";
+const tb = document.getElementById("terrainbtn");
+tb.textContent = TERRAIN ? "flat map" : "show terrain";
 document.getElementById("zx").value = Z; document.getElementById("zxv").textContent = Z;
 // heights are exaggerated (x Z) above the airfield (D.base, m), not above sea level: x 6 would lift Addis
 // Ababa's ground (2,326 m) to 14 km, where deck.gl, picking tiles as if the ground were at 0, left out the near ones
@@ -181,20 +188,37 @@ async function seaLevel(url, ctx) {
   const u = URL.createObjectURL(await c.convertToBlob({type: "image/png"}));
   try { return await baseFetch(u, ctx); } finally { URL.revokeObjectURL(u); }
 }
-const onGround = {extensions: [new deck._TerrainExtension()]};
+// with terrain: on it; flat: the map, shadow and airports at the airfield's height (D.base), which the
+// exaggeration leaves unchanged, so the track keeps its height above that ground
+const onGround = () => TERRAIN ? {extensions: [new deck._TerrainExtension()]} : {};
+const g0 = (p) => [p[0], p[1], TERRAIN ? 0 : D.base];
 const off = (d) => (d.k === "steep" || d.k === "glitch") && hidden("_" + d.k);  // switched off in the menu
+// a map tile flat at height z, darkened (as the terrain's shading) so the yellow track stands out
+function flat(props, z, more) {
+  const [[w, s], [e, n]] = props.tile.boundingBox;
+  return new deck.BitmapLayer(props, {data: null, image: props.data, tintColor: [185, 185, 185],
+                                      bounds: [[w, s, z], [w, n, z], [e, n, z], [e, s, z]], ...more});
+}
 function layers() {
   return [
+    // deck.gl leaves out the tiles nearest the camera in a steep view aimed high above the ground (white
+    // patches at the bottom): coarse tiles behind everything (drawn first, not in the depth buffer) fill them
+    new deck.TileLayer({id: "under", data: D.tiles, minZoom: 0, maxZoom: 19, tileSize: 256, zoomOffset: -3,
+      zRange: [D.base, D.base], renderSubLayers: props => flat(props, D.base,
+        {parameters: {depthWriteEnabled: false, depthCompare: "always"}})}),
     // the ground with its heights (x Z, as the track): see TERRAIN
-    new deck.TerrainLayer({id: "terrain" + Z, elevationData: D.terrain, texture: D.tiles, minZoom: 0, maxZoom: 15,
+    TERRAIN ? new deck.TerrainLayer({id: "terrain" + Z, elevationData: D.terrain, texture: D.tiles, minZoom: 0, maxZoom: 15,
       // a quarter of the tiles of zoomOffset 1 (each is two downloads and a mesh); a coarser mesh (m x Z)
       tileSize: 256, zoomOffset: 0, operation: "terrain+draw", fetch: seaLevel, meshMaxError: 5 * Z,
       loaders: [loaders.TerrainLoader], loadOptions: {worker: false},
-      elevationDecoder: {rScaler: 256 * Z, gScaler: Z, bScaler: Z / 256, offset: -32768 * Z + D.base * (1 - Z)}}),
-    new deck.LineLayer({id: "shadow", data: D.segs, getSourcePosition: d => [d.a[0], d.a[1], 0],
-      getTargetPosition: d => [d.b[0], d.b[1], 0], getColor: [100, 100, 100, 90], getWidth: 1,
-      ...onGround, terrainDrawMode: "drape"}),
-    new deck.LineLayer({id: "drops", data: visible(), getSourcePosition: d => [d.lon, d.lat, 0],
+      elevationDecoder: {rScaler: 256 * Z, gScaler: Z, bScaler: Z / 256, offset: -32768 * Z + D.base * (1 - Z)}})
+    // flat; zoomOffset: the camera aims above the ground (aim()), which would otherwise pick blurry tiles
+    : new deck.TileLayer({id: "tiles", data: D.tiles, minZoom: 0, maxZoom: 19, tileSize: 256, zoomOffset: 1,
+      zRange: [D.base, D.base], renderSubLayers: props => flat(props, D.base)}),
+    new deck.LineLayer({id: "shadow" + TERRAIN, data: D.segs, getSourcePosition: d => g0(d.a),
+      getTargetPosition: d => g0(d.b), getColor: [100, 100, 100, 90], getWidth: 1,
+      ...onGround(), terrainDrawMode: "drape"}),
+    new deck.LineLayer({id: "drops" + TERRAIN, data: visible(), getSourcePosition: d => g0([d.lon, d.lat]),
       getTargetPosition: d => P(A(d)), getColor: d => [...G[d.g].rgb, 160], getWidth: 1,
       updateTriggers: {getTargetPosition: Z}}),
     new deck.LineLayer({id: "track", data: D.segs, pickable: true, getSourcePosition: d => P(d.a),
@@ -203,10 +227,10 @@ function layers() {
       updateTriggers: {getSourcePosition: Z, getTargetPosition: Z, getColor: Math.random(), getWidth: Math.random()}}),
     new deck.ScatterplotLayer({id: "pts", data: D.pts, pickable: true, getPosition: d => P(d.p),
       getFillColor: d => d.c, radiusUnits: "pixels", getRadius: 1.5, updateTriggers: {getPosition: Z}}),
-    new deck.ScatterplotLayer({id: "airports", data: D.airports, getPosition: d => d.p,
-      getFillColor: [80, 80, 80], radiusUnits: "pixels", getRadius: 3, ...onGround, terrainDrawMode: "offset"}),
-    new deck.TextLayer({id: "airport-names", data: D.airports, getPosition: d => d.p, getText: d => d.label,
-      ...onGround, terrainDrawMode: "offset",
+    new deck.ScatterplotLayer({id: "airports" + TERRAIN, data: D.airports, getPosition: d => g0(d.p),
+      getFillColor: [80, 80, 80], radiusUnits: "pixels", getRadius: 3, ...onGround(), terrainDrawMode: "offset"}),
+    new deck.TextLayer({id: "airport-names" + TERRAIN, data: D.airports, getPosition: d => g0(d.p),
+      getText: d => d.label, ...onGround(), terrainDrawMode: "offset",
       getSize: 12, getColor: [60, 60, 60], getPixelOffset: [0, -12], fontSettings: {sdf: true}, outlineWidth: 4, outlineColor: [255, 255, 255, 230]}),
     // alert markers: their group's shape as a character (deck.gl points are only circles)
     new deck.TextLayer({id: "alerts", data: visible(), pickable: true, getPosition: d => P(A(d)),
@@ -261,11 +285,12 @@ if (fs) fs.onclick = () => go({longitude: sign.p[0], latitude: sign.p[1], zoom: 
 ({alerts: "zoomin", first: "firstsign", top: "top"})[Q.get("go")] &&
   setTimeout(() => (document.getElementById({alerts: "zoomin", first: "firstsign", top: "top"}[Q.get("go")]) || {}).onclick?.(), 300);
 document.getElementById("viewlink").onclick = (e) => {
-  const c = cam, alt = (c.position ? c.position[2] : 0) / Z;
+  const c = cam, alt = c.position ? D.base + (c.position[2] - D.base) / Z : 0;  // H()'s inverse
   const u = new URL(location.href);
   u.searchParams.set("view", [c.latitude.toFixed(4), c.longitude.toFixed(4), c.zoom.toFixed(2),
                               Math.round(c.pitch), Math.round(c.bearing), Math.round(alt)].join(","));
   u.searchParams.set("x", Z);
+  TERRAIN ? u.searchParams.set("terrain", 1) : u.searchParams.delete("terrain");
   u.searchParams.delete("go");
   history.replaceState(null, "", u);
   const b = e.target, done = (t) => { b.textContent = t; setTimeout(() => b.textContent = "link to this view", 2000); };
@@ -279,6 +304,10 @@ document.getElementById("zx").oninput = (e) => {
   Z = +e.target.value; document.getElementById("zxv").textContent = Z;
   view = {...view, position: aim(aimAlt)};
   map.setProps({layers: layers(), initialViewState: {...view, _t: Date.now()}});
+};
+tb.onclick = () => {
+  TERRAIN = !TERRAIN; tb.textContent = TERRAIN ? "flat map" : "show terrain";
+  map.setProps({layers: layers()});
 };
 function moveCursor(p) { cursor = p; map.setProps({layers: layers()}); }
 function retime3d() { labelsDirty = true; map.setProps({layers: layers()}); }
