@@ -133,7 +133,11 @@ No flight tracks are stored. Each alert is one line in `alerts.jsonl` with links
 - `map` - our flight map page (`docs/flight_map.html?hex=...&t=<alert time>`, on GitHub Pages; `--viewer-url`,
   `''` leaves it out): the flight of the alert whenever the link is opened - live while it flies, its track
   afterwards - on our map, on ADS-B Exchange's (embedded: live, or its replay cut to that flight), or both
-  side by side; plus its board data when it is a TLV flight.
+  side by side; plus its board data when it is a TLV flight. `a=` lists this alert and the flight's earlier
+  ones (`KIND~<seconds after t>`, joined by `.`), drawn as orange markers on the track. "analyse track" (or
+  `&analyze` in the link) runs the monitor's own checks on the drawn track in the browser (`flight_watch.py`
+  under Pyodide, ~10 MB the first time; a few seconds a flight) and marks every alert they raise with a purple
+  ring; the button then hides / shows them.
 - `fr24_flight` - Flightradar24 history for the flight number (e.g. `/data/flights/fz1073`); pick the
   date to open its playback. Free FR24 accounts only see recent history.
 - `fr24_aircraft` - Flightradar24 history for the registration (works when callsign != flight number).

@@ -36,7 +36,14 @@ Each alert goes through `Monitor.alert()` (cooldowns, hot flights) to `Notifier`
 `alerts.jsonl`, the `Announcer` (social-media-style post, threaded per flight, printed as a feed
 and appended to `posts.jsonl`), and ntfy / Telegram when configured. `tests/replay.py` and
 `tools/` (incident capture, turn-zone learning, `plot_alert.py`
-3D replay of an alert) are support code, not part of the monitor.
+3D replay of an alert, `squawk_cases.py`) are support code, not part of the monitor.
+`tools/squawk_cases.py` (17 Oct 2026): the owner wanted real emergencies to measure the checks against,
+without keeping our own list. The AeroSignals bot on Bluesky (spotterintel.bsky.social, since 11 Apr 2026,
+~2 squawks a day; public API, no login) posts each 7700 / 7600 / 7500 a few minutes after it starts, and the
+outcome as a reply. Each post -> callsign (airline ICAO + number, or a route-data callsign with the post's
+route) -> hex from ADS-B Exchange's heatmap -> its trace, which must squawk the code -> the leg replayed
+from the origin, the destination and the squawk point. Results in `squawks/` (git-ignored), including
+`squawk_cases.xlsx`. Never asks adsb.lol (the monitor's feed); ADS-B Exchange one request at a time.
 
 `docs/` is published with GitHub Pages (e.g. `docs/fz1073_map.html`, made by `tools/plot_alert.py
 --map`); `examples/` holds the FZ1073 alerts and 3D plot. Plot pages are stand-alone (data embedded,
@@ -79,7 +86,16 @@ a trace: live for 20 min after the alert, then the replay. A replay shows one UT
 local helper `tools/serve.py`): the board table and a live map of one flight, processed in the
 browser. `flight_map.html` is not the incident pages' viewer (`plot_alert.py`), but draws the track at its
 height the same way (x 3 above sea level, `x=` / slider), tilts to 85 deg, and has "show terrain" (`terrain=1`,
-the same terrarium tiles and decoding; 16 Oct 2026: the owner missed tilting low to see heights). The owner wants the browser (JS) and the monitor (Python) to process alike: the JS
+the same terrarium tiles and decoding; 16 Oct 2026: the owner missed tilting low to see heights). It draws the link's
+`a=` alerts (orange) and, with `analyze` or "analyse track", the alerts our checks raise on the drawn trace (purple
+rings, labelled only where they add to `a=`; the button hides / shows them). The owner wanted one procedure, not a
+JS copy of the checks (17 Oct 2026): the page runs `tools/track_alerts.py` - the trace replayed through
+`flight_watch.Monitor` by `tests/replay.py`, watched from the origin, the destination and the point at `t` - under
+Pyodide (CDN, in a worker; `requests` replaced by a stub, the replay never reaches the network). The Python files
+come from raw.githubusercontent.com (main), locally from `tools/serve.py`'s `/src/`: a change to the checks
+reaches the map with the next push. `tools/squawk_cases.py` uses the same module. adsb.lol's trace is not what
+the monitor received live (thinner coverage, or denser in a dive than our polls), so the two layers can differ:
+FR6789 17 Oct 2026, ADS-B Exchange's trace: the same 5 alerts, 2-4 s in Chrome. The owner wants the browser (JS) and the monitor (Python) to process alike: the JS
 board logic is a port of `Schedule.load` (slot grouping - one airline with two numbers in a slot is two flights:
 ENT238 and ENT368 from KTW were both due 04:00 on 14 Oct 2026, and SP-ESD flying ENT368 was taken as ENT238 -, lowest flight number = operating carrier,
 callsign variants), `FB.AIRLINE_ICAO` is a copy of `AIRLINE_ICAO`, `FB.israelEpoch` reads board
@@ -386,7 +402,9 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
 ## Links in alerts (no local storage)
 
 `map` (our `docs/flight_map.html?hex=<hex>&f=<flight>&d=<A|D>&t=<alert time>` on GitHub Pages, `--viewer-url`; first
-link in posts, which then leave out Live; with `t` the page shows the flight of the alert whenever it is opened, see Flight pages), `fr24_flight` (`/data/flights/fz1073`, flight number from the board or callsign → IATA),
+link in posts, which then leave out Live; with `t` the page shows the flight of the alert whenever it is opened, see Flight pages;
+`a=KIND~<s after t>.KIND~..`: this alert and the flight's earlier ones of the last 12 h, `Track.sent`, `map_alerts` - 17 Oct 2026, the owner
+wanted every alert on the map, not just the one marker at `t`), `fr24_flight` (`/data/flights/fz1073`, flight number from the board or callsign → IATA),
 `fr24_aircraft` (by registration), `live_adsbx` / `live`, `replay_adsbx` / `replay`
 (`?icao=<hex>&showTrace=<UTC date>&timestamp=<alert time>`: that day's whole track with the aircraft
 placed at the alert; a live link opened later shows whatever the aircraft flies then). ADS-B Exchange replays proved more reliable for older

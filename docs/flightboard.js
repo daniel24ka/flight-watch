@@ -250,14 +250,16 @@ FB.callsignAt = function (pts, t) {
   for (const p of pts) if (p.cs && (!best || Math.abs(p.t - t) < Math.abs(best.t - t))) best = p;
   return best ? best.cs : "";
 };
-/** Today's positions of one aircraft (readsb trace_full; rows [dt, lat, lon, alt, gs, track, ...]). */
-FB.trace = async function (hex) {
+/** Today's positions of one aircraft (readsb trace_full; rows [dt, lat, lon, alt, gs, track, ...]).
+ *  raw: an array that gets the trace files as read (flight_map.html's analysis replays them). */
+FB.trace = async function (hex, raw) {
   const xx = hex.slice(-2);
   const out = [];
   for (const kind of ["full", "recent"]) {
     try {
       const d = await FB.getJSON(FB.traceBase() + "/data/traces/" + xx + "/trace_" + kind + "_" + hex + ".json");
       for (const p of d.trace || []) out.push(FB.tracePoint(d, p));
+      if (raw) raw.push(d);
     } catch (e) { /* not available: the trail is built from the live positions instead */ }
   }
   out.sort((a, b) => a.t - b.t);
@@ -265,9 +267,10 @@ FB.trace = async function (hex) {
 };
 /** One past UTC day ("YYYY-MM-DD") of an aircraft, from adsb.lol's history files (the trace above
  *  reaches back only about a day). Throws when it cannot be read. */
-FB.traceDay = async function (hex, day) {
+FB.traceDay = async function (hex, day, raw) {
   const d = await FB.getJSON(FB.traceBase() + "/globe_history/" + day.replace(/-/g, "/") + "/traces/" + hex.slice(-2) +
                              "/trace_full_" + hex + ".json");
+  if (raw) raw.push(d);
   return (d.trace || []).map(p => FB.tracePoint(d, p));
 };
 /** The flight an alert at time `t` belongs to: the leg around t (at most 30 min away from it), or null.

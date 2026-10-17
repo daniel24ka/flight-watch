@@ -358,9 +358,16 @@ def iata_flight(callsign: str) -> str | None:
     return ICAO_TO_IATA[m.group(1)] + m.group(2) if m and m.group(1) in ICAO_TO_IATA else None
 
 
-def external_links(t: "Track", when: float, viewer: str = "") -> dict:
+def map_alerts(alerts, t: float) -> str:
+    """The map link's `a=`: alerts (kind, data time) as KIND~seconds after t, joined by "." (characters a
+    URL keeps as they are), e.g. VERTICAL_RATE~-560.EMERGENCY~0. The page draws a marker for each."""
+    return ".".join(f"{k}~{round(x - t)}" for k, x in alerts)
+
+
+def external_links(t: "Track", when: float, viewer: str = "", kind: str = "") -> dict:
     """Links to the flight on existing sites (nothing is stored locally), and to our map page
-    (docs/flight_map.html) when `viewer` is its address."""
+    (docs/flight_map.html) when `viewer` is its address (`kind`: this alert's, listed in `a=` with the
+    flight's earlier ones)."""
     day = time.strftime("%Y-%m-%d", time.gmtime(when))
     links = {}
     if viewer:
@@ -368,7 +375,10 @@ def external_links(t: "Track", when: float, viewer: str = "") -> dict:
         if t.sched:  # the page then shows the board's data too
             q.update(f=t.sched.flight, d=t.sched.direction[0])
         q["t"] = int(when)  # the page shows the flight of this moment: live, or its replay once it ended
-        links["map"] = viewer + "?" + urlencode(q)
+        shown = [(k, x) for k, x in t.sent if when - x <= MAP_ALERTS_S] + ([(kind, when)] if kind else [])
+        if shown:  # this alert and the flight's earlier ones, drawn on the map
+            q["a"] = map_alerts(shown[-MAP_ALERTS:], when)
+        links["map"] = viewer + "?" + urlencode(q, safe="~")
     flight = t.sched.flight if t.sched else iata_flight(t.callsign)
     if flight:
         links["fr24_flight"] = f"https://www.flightradar24.com/data/flights/{flight.lower()}"
@@ -382,6 +392,9 @@ def external_links(t: "Track", when: float, viewer: str = "") -> dict:
     links["replay"] = f"https://globe.airplanes.live/?icao={t.hex}&{at}"
     return links
 
+
+# map links carry the flight's earlier alerts (`a=`): at most this many, of the last 12 h
+MAP_ALERTS, MAP_ALERTS_S = 20, 12 * 3600
 
 HIGH, LOW = "high", "low"   # request priority: local poll / everything that can wait
 
@@ -712,6 +725,7 @@ class Track:
     amm_dep: float = 0.0     # data time it was last on the ground at Amman / first heard climbing out of it
     takeoff: float = 0.0     # data time of its take-off (left the ground, or first heard climbing low)
     climb_peak: int = 0      # highest altitude since take-off held on two reports in a row (EARLY_DESCENT)
+    sent: deque = field(default_factory=lambda: deque(maxlen=MAP_ALERTS))  # (kind, data time) of its alerts, for map links
 
     @property
     def last(self) -> Sample | None:
@@ -2858,13 +2872,14 @@ class Monitor:
             "near_nm": round(ad, 1), "bearing": round(bearing(a.lat, a.lon, s.lat, s.lon)),
             "flight": self.flight_number(t), "airline": self.airline_name(t),
             "military": t.military, "reg": t.reg, "type": t.actype, "squawk": t.squawk, "route_text": self.route_text(t, traffic, route),
-            "recent": recent, "links": external_links(t, now, self.args.viewer_url),
+            "recent": recent, "links": external_links(t, now, self.args.viewer_url, kind),
             # the spoofing episode this flight was caught in (same label on every flight in it)
             "spoof": t.spoof if t.spoof and now - t.spoof_last <= 1800 else None,
             "gps": t.gps if t.gps and now - t.gps_last <= 1800 else None,  # its GPS-degraded episode
             "skydive": t.skydive if t.skydive and now - t.skydive["t"] <= 1800 else None,
             "from_trace": self.from_trace,
         })
+        t.sent.append((kind, now))
         return True
 
 

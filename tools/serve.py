@@ -7,6 +7,8 @@ read it in the browser. Served from here the pages ask this server instead (same
   /v2/...           -> https://api.adsb.lol/v2/...        (callsign / hex lookups)
   /data/traces/...  -> https://adsb.lol/data/traces/...   (today's positions of one aircraft)
   /globe_history/.. -> https://adsb.lol/globe_history/... (its positions on a past day)
+  /src/<file>       -> this checkout's Python files that flight_map.html's "analyse track" runs in the
+                       browser (Pyodide; on GitHub Pages it reads them from raw.githubusercontent.com)
   anything else     -> the files in docs/ (flights.html, flight_map.html, ...)
 
 Requests go through flight_watch.Http: the same adaptive per-host budget and 429 backoff as
@@ -35,6 +37,8 @@ DOCS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs")
 UPSTREAM = {"/v2/": ("https://api.adsb.lol", 5),          # prefix -> (host, cache seconds)
             "/data/traces/": ("https://adsb.lol", 30),
             "/globe_history/": ("https://adsb.lol", 3600)}   # one aircraft on a past day
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+SOURCES = {"flight_watch.py", "tests/replay.py", "tools/capture_incident.py", "tools/track_alerts.py"}
 
 
 class Relay:
@@ -84,6 +88,15 @@ def handler(relay: Relay):
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if path.startswith("/src/") and path[5:] in SOURCES:  # the local code, edited or not
+                with open(os.path.join(ROOT, path[5:]), "rb") as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/x-python; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
                 return

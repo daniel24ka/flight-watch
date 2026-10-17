@@ -1694,6 +1694,11 @@ class AnnouncerTests(unittest.TestCase):
         self.assertEqual(fw.external_links(fw.Track("738bed"), 1790000000, fw.VIEWER_URL)["map"],
                          fw.VIEWER_URL + "?hex=738bed&t=1790000000")  # not on the board: the aircraft alone
         self.assertNotIn("map", fw.external_links(t, 1790000000, ""))  # --viewer-url ''
+        # the alert's kind and the flight's earlier alerts (a=KIND~seconds after t), drawn on the map
+        t.sent.extend([("VERTICAL_RATE", 1789999440), ("LOST_CONTACT", 1789999500)])
+        self.assertEqual(fw.external_links(t, 1790000000, fw.VIEWER_URL, "EMERGENCY")["map"],
+                         fw.VIEWER_URL + "?hex=8965d1&f=FZ1073&d=A&t=1790000000"
+                         "&a=VERTICAL_RATE~-560.LOST_CONTACT~-500.EMERGENCY~0")
         ann, _ = self.make()
         rec = alert_rec("TOWARD_ISRAEL", "not bound for Israel " + "x" * 400)
         rec["links"] = {"map": links["map"], **rec["links"]}
