@@ -451,7 +451,7 @@ function draw() {
     new deck.PathLayer({id: "shadow" + TERRAIN, data: trail.length > 1 ? [{path: trail.map(p => [p.lon, p.lat])}] : [],
       getPath: d => d.path, getColor: [60, 60, 60, 90], widthMinPixels: 1, ...onGround()}),
     new deck.PathLayer({id: "trail", data: path3.length > 1 ? [{path: path3}] : [],
-      getPath: d => d.path, getColor: [31, 111, 178, 220], widthMinPixels: 3, updateTriggers: {getPath: [Z, path3.length]}}),
+      getPath: d => d.path, getColor: [31, 111, 178, 230], widthUnits: "pixels", getWidth: 5, updateTriggers: {getPath: [Z, path3.length]}}),
     new deck.LineLayer({id: "drop", data: pos && pos[2] > 0 ? [{a: [pos[0], pos[1], 0], b: pos}] : [],
       getSourcePosition: d => d.a, getTargetPosition: d => d.b, getColor: [220, 60, 40, 150], getWidth: 1}),
     new deck.LineLayer({id: "ahead", data: ahead, getSourcePosition: d => d.a, getTargetPosition: d => d.b,

@@ -1242,6 +1242,7 @@ class Monitor:
         self.clock = time.monotonic  # cadence (tests and replays substitute their own clocks)
         self.wall = time.time
         self.tracks: dict[str, Track] = {}
+        self.rides = self.past_rides()
         self.routes: dict[str, tuple[float, str | None]] = {}
         self.route_failures = 0
         self.routes_off = args.no_routes
@@ -1568,7 +1569,11 @@ class Monitor:
 
         updated: list[tuple[Track, Sample | None, dict]] = []
         for (hexid, msg_t, sample), ac in latest.values():
-            t = self.tracks.setdefault(hexid, Track(hexid))
+            t = self.tracks.get(hexid)
+            if t is None:
+                t = self.tracks[hexid] = Track(hexid)
+                if hexid in self.rides:  # announced before a restart: stays quiet (SKYDIVE_QUIET_S)
+                    t.skydive = self.rides.pop(hexid)
             self.new_callsign(t, (ac.get("flight") or "").strip(), msg_t)
             t.reg = ac.get("r") or t.reg
             t.actype = ac.get("t") or t.actype
@@ -2094,6 +2099,23 @@ class Monitor:
         else:
             log.info("%s skydiving lift %d: %s, %.0f kt at %d ft, descending at %d ft",
                      t.label(), t.skydive_lifts, model, slow, top, s.alt)
+
+    def past_rides(self) -> dict:
+        """hex -> the skydiving state of each ride already announced in --jsonl (monitor.sh: today's file),
+        so a restart does not announce it again (4XDAN, 17 Oct 2026)."""
+        out = {}
+        try:
+            with open(self.args.jsonl, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    if r.get("skydive") and "probably a skydiving ride" in r.get("message", ""):
+                        out[r["hex"]] = {**r["skydive"], "quiet": True, "told": True}
+        except (OSError, TypeError):
+            pass  # no file yet, or --jsonl ''
+        return out
 
     def skydive_note(self, t: Track, now: float) -> str:
         """' [skydiving pattern: ...]' for alerts within 30 min of a lift, else ''."""

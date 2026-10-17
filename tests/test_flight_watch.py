@@ -850,6 +850,20 @@ class SkydiveTests(unittest.TestCase):
         self.assertIn("probably a skydiving ride", alerts[0]["message"])
         self.assertEqual(mon.tracks["739215"].skydive["lift"], 2)
 
+    def test_ride_announced_before_a_restart_is_not_announced_again(self):
+        ident = dict(flight="4XDAN", r="4X-DAN", t="P750", category="A1")
+        d = tempfile.mkdtemp()
+        f = os.path.join(d, "alerts.jsonl")
+        mon, feed, clock, alerts = make(["--no-routes", "--jsonl", f])
+        fly(mon, feed, clock, "739215", lift(), **ident)
+        self.assertEqual(kinds(alerts), ["VERTICAL_RATE"])
+        with open(f, "w", encoding="utf-8") as out:  # what Notifier.send appends (replaced in these tests)
+            out.write(json.dumps(alerts[0]) + "\n")
+        mon, feed, clock2, alerts = make(["--no-routes", "--jsonl", f])  # restarted 20 min later
+        clock2.t = clock.t + 1200
+        fly(mon, feed, clock2, "739215", lift(), **ident)
+        self.assertEqual(kinds(alerts), [])
+
     def test_faster_jump_run_of_a_jump_plane(self):
         """4XDAN, 17 Oct 2026: a jump run at 87-104 kt, then -4,800 ft/min: a ride, said so on Telegram."""
         mon, feed, clock, alerts = make(["--no-routes"])

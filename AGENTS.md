@@ -260,7 +260,8 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   A jump-plane type (`JUMP_PLANES`) may run in at up to 110 kt (`SKYDIVE_RUN_KT_JUMP_PLANE`; others 80): on 17 Oct
   4XDAN ran in at 87-104 kt and its first lift went out as a plain steep descent + lost contact. Dives suppressed
   in the quiet time extend it (later lifts whose run was not seen). The Telegram text says "Probably a skydiving
-  flight (sport parachuting ...)". An airline callsign or a large
+  flight (sport parachuting ...)". A restart reads the rides already announced in `--jsonl` (`Monitor.past_rides`; monitor.sh:
+  today's file), so they stay quiet; the bot cannot read the channel's history, and the file is the record. An airline callsign or a large
   aircraft (category A3-A5 or `LARGE_TYPES`) flying it is alerted at priority 5 (near-stall flight at
   height, then a dive); military transports drop paratroopers and are only described.
 - **HOLDING**: an airliner (airline callsign, not military) circling - >= 330 deg of turn one way
