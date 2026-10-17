@@ -175,6 +175,9 @@ SPOOF_KINDS = {"POSITION_JUMP", "COURSE_CHANGE", "SHARP_TURN", "OFF_COURSE", "TU
 # while - then a steep descent. 4XDAN (P750) over the Dead Sea, 10 Oct 2026: climb to ~12,000 ft
 # every 20-40 min, ~50 kt while jumpers exit, then -5,600 ft/min at 150 kt out of coverage.
 SKYDIVE_RUN_KT, SKYDIVE_RUN_ALT, SKYDIVE_DESCENT = 80, 6000, 3000
+# a jump-plane type (JUMP_PLANES) may run in faster: 4XDAN, 17 Oct 2026, 87-104 kt at ~11,900 ft (one report
+# at 74), then -4,800 ft/min - its first lift went out as a plain steep descent and lost contact
+SKYDIVE_RUN_KT_JUMP_PLANE = 110
 # A jump plane's skydiving is alerted once (the first VERTICAL_RATE of its lifts, as a sanity check of
 # the monitor); then, until SKYDIVE_QUIET_S after its last lift, only an emergency squawk. 4XDAN, 16 Oct
 # 2026: 13 alerts in 3 lifts (each a dive, lost contact low, heard again), 6 of them on Telegram.
@@ -1081,7 +1084,12 @@ class Announcer:
             out = msg
         k = rec.get("skydive")
         if k and kind != "SKYDIVE_PATTERN":
-            out = (out + ". " if out else "") + f"Skydiving lift {k['lift']} ({k['model']})"
+            if "probably a skydiving ride" in rec["message"]:
+                out = (out + ". " if out else "") + (
+                    f"Probably a skydiving flight (sport parachuting, {k['model']}): no more alerts on it for "
+                    f"{SKYDIVE_QUIET_S / 3600:.0f} h unless an emergency")
+            else:
+                out = (out + ". " if out else "") + f"Skydiving lift {k['lift']} ({k['model']})"
         also = re.search(r"\[also: ([^\]]+)\]", rec["message"])
         if also:
             names = [self.NAMES.get(k.strip(), k.strip().lower()) for k in also.group(1).split(",")]
@@ -2058,12 +2066,13 @@ class Monitor:
             return
         if t.skydive and s.t - t.skydive["t"] < 600:
             return  # the same lift
+        slow_kt = SKYDIVE_RUN_KT_JUMP_PLANE if t.actype in JUMP_PLANES else SKYDIVE_RUN_KT
         run = [x for x in t.samples if s.t - 300 <= x.t < s.t and not x.on_ground and x.gs is not None
-               and x.gs <= SKYDIVE_RUN_KT and (x.alt or 0) >= SKYDIVE_RUN_ALT]
+               and x.gs <= slow_kt and (x.alt or 0) >= SKYDIVE_RUN_ALT]
         if len(run) < 2 or run[-1].t - run[0].t < 15:
             return
         moved = haversine_nm(run[0].lat, run[0].lon, run[-1].lat, run[-1].lon) / ((run[-1].t - run[0].t) / 3600)
-        if moved > SKYDIVE_RUN_KT * 1.3:
+        if moved > slow_kt * 1.3:
             return  # positions say it was not slow: corrupted / spoofed speeds (QTR94R "117 kt" at FL390)
         top = max(x.alt for x in run)
         if top - s.alt < 1000:
@@ -2075,7 +2084,8 @@ class Monitor:
         large = t.large
         why = ("an airliner" if airline_like(t) else "a large aircraft") if (airline_like(t) or large) else ""
         ride = not why and not t.military  # a jump plane: alerted once, then quiet (SKYDIVE_QUIET_S)
-        same = t.skydive and t.skydive.get("quiet") and s.t - t.skydive["t"] <= SKYDIVE_QUIET_S
+        same = (t.skydive and t.skydive.get("quiet")
+                and s.t - max(t.skydive["t"], t.skydive.get("quiet_from", 0)) <= SKYDIVE_QUIET_S)
         t.skydive = {"t": s.t, "top": top, "gs": round(slow), "lift": t.skydive_lifts, "model": model,
                      "quiet": ride, "told": bool(same and t.skydive["told"])}
         if why and not t.military:
@@ -2772,8 +2782,11 @@ class Monitor:
         # loss of control, and the silence after it ("falling", Monitor.plunging) - alerted
         falling = (kind == "VERTICAL_RATE" and key.endswith("DESCENT") and severity >= a.vrate
                    or kind == "LOST_CONTACT" and "falling" in msg)
-        if k and k.get("quiet") and now - k["t"] <= SKYDIVE_QUIET_S and kind != "EMERGENCY" and not falling:
+        if (k and k.get("quiet") and now - max(k["t"], k.get("quiet_from", 0)) <= SKYDIVE_QUIET_S
+                and kind != "EMERGENCY" and not falling):
             if k["told"] or kind != "VERTICAL_RATE":
+                if kind == "VERTICAL_RATE":
+                    k["quiet_from"] = now  # another lift's dive (its jump run unseen): still riding
                 log.info("%s %s - skydiving rides (lift %d), not alerted: %s", t.label(), kind, k["lift"], msg)
                 return False
             k["told"] = True  # its first dive is alerted, as a check that the monitor sees them

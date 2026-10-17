@@ -850,6 +850,15 @@ class SkydiveTests(unittest.TestCase):
         self.assertIn("probably a skydiving ride", alerts[0]["message"])
         self.assertEqual(mon.tracks["739215"].skydive["lift"], 2)
 
+    def test_faster_jump_run_of_a_jump_plane(self):
+        """4XDAN, 17 Oct 2026: a jump run at 87-104 kt, then -4,800 ft/min: a ride, said so on Telegram."""
+        mon, feed, clock, alerts = make(["--no-routes"])
+        fly(mon, feed, clock, "739215", lift(gs_run=95), flight="4XDAN", r="4X-DAN", t="P750", category="A1")
+        self.assertEqual(kinds(alerts), ["VERTICAL_RATE"])
+        self.assertIn("probably a skydiving ride", alerts[0]["message"])
+        text = mon.notifier.announcer.compose(alerts[0], reply=False)
+        self.assertIn("Probably a skydiving flight (sport parachuting, PAC 750XL)", "".join(x.get("text", "") for x in text))
+
     def test_a_fall_beyond_vrate_on_a_ride_is_alerted(self):
         """A spin, not a jump-plane dive: -12,000 ft/min after the ride's first alert."""
         mon, feed, clock, alerts = make(["--no-routes"])

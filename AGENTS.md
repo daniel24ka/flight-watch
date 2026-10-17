@@ -256,7 +256,11 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   lifts, 6 on Telegram; the owner now wants one: a jump plane's first VERTICAL_RATE ("probably a skydiving ride",
   a sanity check that the monitor sees it), then until `SKYDIVE_QUIET_S` (3 h) after its last lift only EMERGENCY
   and a fall at `--vrate` or faster (VERTICAL_RATE, LOST_CONTACT "falling": a spin, not its -4,200 to -5,700 ft/min
-  dives). Cost: an accident at a normal rate or below coverage (it goes silent below ~7,000 ft) is only logged. An airline callsign or a large
+  dives). Cost: an accident at a normal rate or below coverage (it goes silent below ~7,000 ft) is only logged.
+  A jump-plane type (`JUMP_PLANES`) may run in at up to 110 kt (`SKYDIVE_RUN_KT_JUMP_PLANE`; others 80): on 17 Oct
+  4XDAN ran in at 87-104 kt and its first lift went out as a plain steep descent + lost contact. Dives suppressed
+  in the quiet time extend it (later lifts whose run was not seen). The Telegram text says "Probably a skydiving
+  flight (sport parachuting ...)". An airline callsign or a large
   aircraft (category A3-A5 or `LARGE_TYPES`) flying it is alerted at priority 5 (near-stall flight at
   height, then a dive); military transports drop paratroopers and are only described.
 - **HOLDING**: an airliner (airline callsign, not military) circling - >= 330 deg of turn one way
