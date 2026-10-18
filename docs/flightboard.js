@@ -260,7 +260,9 @@ FB.trace = async function (hex, raw) {
       const d = await FB.getJSON(FB.traceBase() + "/data/traces/" + xx + "/trace_" + kind + "_" + hex + ".json");
       for (const p of d.trace || []) out.push(FB.tracePoint(d, p));
       if (raw) raw.push(d);
-    } catch (e) { /* not available: the trail is built from the live positions instead */ }
+    } catch (e) {  // not available: the trail is built from the live positions instead
+      if (raw) (raw.errors = raw.errors || []).push(e.message);  // why, for the page to say
+    }
   }
   out.sort((a, b) => a.t - b.t);
   return out.filter((p, i) => !i || p.t > out[i - 1].t);
