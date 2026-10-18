@@ -59,6 +59,8 @@ class FakeFeed:
         self.calls = []           # (method, path)
         self.limited = set()      # path prefixes answered with 429
         self.refused = set()      # path prefixes answered with 403 (adsb.lol's browser check, 18 Oct 2026)
+        self.unseen_by = {}       # host -> hexes that feed does not have (coverage differs between feeds)
+        self.mil = set()          # hexes in adsb.fi's military list (/v2/mil)
         self.route_status = 200   # standing-data host: 200 serves self.files, else this status
         self.files = {}           # standing-data path ("routes/schema-01/W/WZZ-3.csv") -> CSV text
         self.headers = {}
@@ -80,8 +82,11 @@ class FakeFeed:
         if any(path.startswith(p) for p in self.refused):
             return FakeResponse(403, "<title>Verification</title>", url=url)
         now_ms = self.clock() * 1000
-        if "/point/" in path:
-            return FakeResponse(200, {"now": now_ms, "ac": [self.ac(h) for h in sorted(self.local)]})
+        unseen = self.unseen_by.get(u.netloc, set())
+        if "/point/" in path or "/v3/lat/" in path:
+            return FakeResponse(200, {"now": now_ms, "ac": [self.ac(h) for h in sorted(self.local - unseen)]})
+        if path.endswith("/v2/mil"):
+            return FakeResponse(200, {"now": now_ms, "ac": [{"hex": h} for h in sorted(self.mil)]})
         if "/hex/" in path:
             ids = path.rsplit("/", 1)[1].split(",")
             return FakeResponse(200, {"now": now_ms, "ac": [self.ac(h) for h in ids if h in self.aircraft]})
@@ -109,7 +114,8 @@ class FakeFeed:
 
 def make(argv=(), with_schedule=False):
     clock = Clock()
-    args = fw.parse_args(["--jsonl", "", "--no-schedule", "--turn-zones", "",
+    args = fw.parse_args(["--jsonl", "", "--no-schedule", "--turn-zones", "", "--fallback-provider", "",
+                          "--remote-providers", "adsb.lol",  # one feed unless a test asks for more
                           "--standing-data", fw.STANDING_DATA, *argv])  # the fake feed, never a local copy
     http = fw.Http(min_gap=0, rate=args.rate, rate_max=args.rate_max, clock=clock, rng=lambda: 0.5)
     feed = FakeFeed(clock)
@@ -1953,4 +1959,46 @@ class Run18OctTests(unittest.TestCase):
                 **ident)
         self.assertEqual(kinds(alerts), ["VERTICAL_RATE"])
         self.assertIn("no further alerts on it", alerts[0]["message"])
+
+
+class SecondFeedTests(unittest.TestCase):
+    """--fallback-provider (adsb.fi): the local circle when adsb.lol does not answer (18 Oct 2026: ~110 of
+    360 polls an hour answered, then none for 2 h twice)."""
+
+    def setUp(self):
+        self.mon, self.feed, self.clock, self.alerts = make(["--no-routes", "--fallback-provider", "adsb.fi"])
+        self.feed.local = {"999999", "999998", "999997"}
+        for i, h in enumerate(sorted(self.feed.local)):
+            self.feed.aircraft[h] = airborne(31.5 + i / 10, 34.0, 20000, flight=f"KEEP{i}")
+
+    def test_local_poll_comes_from_the_second_feed_when_the_first_refuses(self):
+        mon, feed, clock = self.mon, self.feed, self.clock
+        feed.limited.add("/v2/point/")
+        fly(mon, feed, clock, "4a3122", path(32.4, 34.0, [300] * 30, [20000] * 30), flight="AIZ1806")
+        self.assertEqual(mon.local_feed, "adsb.fi")
+        self.assertEqual(len(mon.tracks["4a3122"].samples), 30)
+        self.assertTrue(any(p.startswith("/api/v3/lat/") for _, p in feed.calls))
+        self.assertEqual(self.alerts, [])
+
+    def test_silence_counts_only_on_the_feed_that_heard_it(self):
+        """adsb.fi does not have it: while only adsb.fi answers, its silence is not judged."""
+        mon, feed, clock = self.mon, self.feed, self.clock
+        fly(mon, feed, clock, "4a3122", path(32.4, 34.0, [300] * 6, [20000] * 6), flight="AIZ1806")
+        self.assertEqual(mon.tracks["4a3122"].feed, "adsb.lol")
+        feed.unseen_by["opendata.adsb.fi"] = {"4a3122"}
+        feed.limited.add("/v2/point/")
+        fly(mon, feed, clock, "4a3122", path(32.5, 33.6, [300] * 60, [20000] * 60), flight="AIZ1806")  # 10 min
+        self.assertNotIn("LOST_CONTACT", kinds(self.alerts))
+        feed.limited.clear()  # adsb.lol back, and it does not have it either: silent now
+        feed.local.discard("4a3122")
+        for _ in range(30):
+            step(mon, clock)
+        self.assertNotIn("LOST_CONTACT", kinds(self.alerts))  # (we did not see it go)
+
+    def test_military_list_marks_aircraft_without_db_flags(self):
+        mon, feed, clock = self.mon, self.feed, self.clock
+        feed.mil.add("ae1234")
+        feed.limited.add("/v2/point/")
+        fly(mon, feed, clock, "ae1234", path(32.6, 34.6, [90] * 3, [25000] * 3), flight="RCH123", t="C17")
+        self.assertTrue(mon.tracks["ae1234"].military)
 

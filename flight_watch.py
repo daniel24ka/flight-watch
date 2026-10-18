@@ -70,10 +70,15 @@ PROVIDERS = {
     "adsb.lol": {"base": "https://api.adsb.lol/v2",
                  "point": "/point/{lat}/{lon}/{radius}",
                  "hex": "/hex/{ids}", "callsign": "/callsign/{ids}"},
-    "adsb.fi": {"base": "https://opendata.adsb.fi/api/v2",
-                "point": "/lat/{lat}/lon/{lon}/dist/{radius}",
-                "hex": "/hex/{ids}", "callsign": "/callsign/{ids}"},
+    # personal, non-commercial use, 1 request/s, credit adsb.fi with a link (github.com/adsbfi/opendata);
+    # no dbFlags in its answers: military aircraft come from its /v2/mil list. 19 Oct 2026: same readsb
+    # fields as adsb.lol, several hex ids / callsigns per request.
+    "adsb.fi": {"base": "https://opendata.adsb.fi/api",
+                "point": "/v3/lat/{lat}/lon/{lon}/dist/{radius}",
+                "hex": "/v2/hex/{ids}", "callsign": "/v2/callsign/{ids}", "mil": "/v2/mil",
+                "rate_max": 30},
 }
+MIL_LIST_S = 600  # a feed's list of military aircraft (PROVIDERS "mil") is read this often
 # Callsign -> route and airport positions: Virtual Radar Server standing data (CC0, crowd-sourced;
 # adsb.lol's own route API now redirects to it). Per-airline CSV files, fetched on first use and
 # kept in memory only. A local checkout of the repository can be used instead (--standing-data).
@@ -739,6 +744,7 @@ class Track:
     takeoff: float = 0.0     # data time of its take-off (left the ground, or first heard climbing low)
     climb_peak: int = 0      # highest altitude since take-off held on two reports in a row (EARLY_DESCENT)
     flown_cs: str = ""       # a callsign whose flight to / from our airport it has completed (end_leg)
+    feed: str = ""           # the provider of its newest report
     sent: deque = field(default_factory=lambda: deque(maxlen=MAP_ALERTS))  # (kind, data time) of its alerts, for map links
 
     @property
@@ -1278,7 +1284,15 @@ class Monitor:
         if schedule and self.standing:
             schedule.resolve = self.resolve_airline
         self.last_ok: float | None = None
-        self.ok_polls: deque = deque(maxlen=2000)  # data times of the local polls that were answered
+        self.ok_polls: deque = deque(maxlen=2000)  # (data time, provider) of the local polls answered
+        self.local_feed = args.provider  # the provider of the last answered local poll
+        self.mil_hexes: set[str] = set()  # military aircraft from feeds without dbFlags (PROVIDERS "mil")
+        self.mil_at = -1e9
+        for prov in {args.provider, args.fallback_provider, *args.remote_providers} - {""}:
+            cap = PROVIDERS[prov].get("rate_max")
+            if cap:  # a feed's own published limit
+                http.budgets[PROVIDERS[prov]["base"].split("/")[2]] = Budget(
+                    min(args.rate, cap), cap, clock=http.clock, rng=http.rng)
         self.shared_at = 0.0  # data time of the last callsign push to the relay (share_callsigns)
         self.last_count = 0
         self.stats = {}
@@ -1337,6 +1351,50 @@ class Monitor:
         log.info("%s %s lookups: %s", prov, kind,
                  "many ids per request" if ok else "one id per request")
         return ok
+
+    def second_feed(self, err: Exception) -> tuple | None:
+        """The local circle from --fallback-provider when --provider did not answer (HTTP 429, cooling
+        down, an error): (server time, aircraft, provider), else None. 18 Oct 2026: adsb.lol answered ~110
+        of 360 local polls an hour, then none for 2 h twice."""
+        prov, a = self.args.fallback_provider, self.args
+        if not prov or prov in self.disabled:
+            return None
+        try:
+            server_now, local = self.fetch("point", prov, HIGH, lat=a.lat, lon=a.lon, radius=int(a.radius))
+        except requests.HTTPError as e:
+            self.note_refusal(prov, e)
+            log.info("local poll: %s failed too (%s)", prov, e)
+            return None
+        except requests.RequestException as e:
+            log.info("local poll: %s failed too (%s)", prov, e)
+            return None
+        if self.local_feed != prov:
+            log.info("local poll from %s (%s: %s)", prov, a.provider, err)
+        return server_now, local, prov
+
+    def read_mil_list(self) -> None:
+        """Military aircraft of the feeds whose answers carry no dbFlags (their "mil" list), every
+        MIL_LIST_S: without it a tanker over Israel heard only through adsb.fi is a TOWARD_ISRAEL."""
+        if self.clock() - self.mil_at < MIL_LIST_S:
+            return
+        provs = [p for p in {self.args.fallback_provider, *self.args.remote_providers} - {""}
+                 if "mil" in PROVIDERS[p] and p not in self.disabled]
+        if not provs:
+            return
+        self.mil_at = self.clock()
+        for prov in provs:
+            try:
+                _, acs = self.fetch("mil", prov, LOW)
+            except requests.HTTPError as e:
+                self.note_refusal(prov, e)
+                log.debug("%s military list: %s", prov, e)
+                continue
+            except requests.RequestException as e:
+                log.debug("%s military list: %s", prov, e)
+                continue
+            self.mil_hexes |= {(x.get("hex") or "").lower() for x in acs}
+            for t in self.tracks.values():
+                t.military = t.military or t.hex in self.mil_hexes
 
     def note_refusal(self, prov: str, e: requests.HTTPError) -> None:
         code = e.response.status_code if e.response is not None else 0
@@ -1442,11 +1500,15 @@ class Monitor:
 
     # ---- data
     def fetch(self, kind: str, provider: str | None = None, priority: str = HIGH, **fmt):
-        p = PROVIDERS[provider or self.args.provider]
+        name = provider or self.args.provider
+        p = PROVIDERS[name]
         data = self.http.get_json(p["base"] + p[kind].format(**fmt), priority)
         now = data.get("now")
         server_now = now / 1000 if now and now > 1e11 else (now or self.wall())
-        return float(server_now), data.get("ac") or data.get("aircraft") or []
+        acs = data.get("ac") or data.get("aircraft") or []
+        for ac in acs:
+            ac["_feed"] = name
+        return float(server_now), acs
 
     def lookup_routes(self, tracks: list[Track]) -> None:
         """Route (origin..destination) per callsign, from the standing data; at most a few new
@@ -1578,9 +1640,17 @@ class Monitor:
         try:
             server_now, local = self.fetch("point", priority=HIGH, lat=a.lat, lon=a.lon,
                                            radius=int(a.radius))
-        except requests.RequestException:
-            self.fallback(self.watch_list())
-            raise
+            feed = a.provider
+        except requests.RequestException as e:
+            got = self.second_feed(e)
+            if got is None:
+                self.fallback(self.watch_list())
+                raise
+            server_now, local, feed = got
+        if feed != self.local_feed and feed == a.provider:
+            log.info("local poll from %s again", feed)
+        self.local_feed = feed
+        self.read_mil_list()
         batches = [(server_now, ac) for ac in local]
         local_hexes = {(ac.get("hex") or "").lower() for ac in local}
 
@@ -1608,7 +1678,8 @@ class Monitor:
             t.reg = ac.get("r") or t.reg
             t.actype = ac.get("t") or t.actype
             t.category = ac.get("category") or t.category
-            t.military = t.military or bool(int(ac.get("dbFlags") or 0) & 1)
+            t.military = t.military or bool(int(ac.get("dbFlags") or 0) & 1) or hexid in self.mil_hexes
+            t.feed = ac.get("_feed", "")
             t.last_msg = max(t.last_msg, msg_t)
             if self.schedule and t.callsign in self.schedule.by_callsign:
                 t.sched = None if t.callsign == t.flown_cs else self.schedule.by_callsign[t.callsign]
@@ -1640,7 +1711,7 @@ class Monitor:
         if not feed_ok:
             log.warning("feed returned %d aircraft (was %d) - skipping lost-contact check",
                         len(local), self.last_count)
-        self.ok_polls.append(server_now)
+        self.ok_polls.append((server_now, feed))
         if feed_ok:
             self.check_lost(server_now)
         self.end_spoofs(server_now)
@@ -2527,7 +2598,10 @@ class Monitor:
 
     def check_lost(self, now: float) -> None:
         a = self.args
-        polls = list(self.ok_polls)
+        by_feed: dict[str, list[float]] = {}
+        for pt, pf in self.ok_polls:
+            by_feed.setdefault(pf, []).append(pt)
+        every = sorted(pt for pt, _ in self.ok_polls)
         for t in self.tracks.values():
             s = t.last
             if t.lost or not s or s.on_ground or len(t.samples) < 3:
@@ -2537,7 +2611,13 @@ class Monitor:
             # last heard before it may have landed or flown on meanwhile: 6 false LOST_CONTACTs "silent
             # 6182s" when polls came back. (Formerly no check at all after any poll more than 45 s after
             # the previous one, so while the API refused half our polls losses waited for two in a row.)
+            # inside the circle: a poll of the feed that last heard it (the other feed's coverage differs;
+            # none since it was heard = not judged yet). Outside: its follow requests (last_query, below).
+            inside = self.dist(s) <= a.radius - a.edge_margin
+            polls = by_feed.get(t.feed, every) if inside else every
             i = bisect.bisect_right(polls, t.last_msg)
+            if inside and i == len(polls):
+                continue
             seen = polls[i] if i < len(polls) else now
             if seen - t.last_msg > BLIND_S:
                 t.lost, t.lost_alerted = True, False
@@ -3003,7 +3083,9 @@ def parse_args(argv=None):
     g.add_argument("--interval", type=float, default=10, help="seconds between polls")
     g.add_argument("--provider", choices=PROVIDERS, default="adsb.lol",
                    help="feed for the local circle")
-    g.add_argument("--remote-providers", default="adsb.lol",
+    g.add_argument("--fallback-provider", default="adsb.fi",
+                   help="feed for the local circle when --provider does not answer (HTTP 429, an error); '' = none")
+    g.add_argument("--remote-providers", default="adsb.lol,adsb.fi",
                    help="comma-separated feeds for following/discovering distant flights "
                         "(e.g. adsb.lol,adsb.fi; a feed answering 401/403 is dropped)")
     g.add_argument("--rate", type=float, default=8,
@@ -3143,7 +3225,9 @@ def parse_args(argv=None):
         a.protect = "israel" if REGION_AIRPORTS.get(a.airport, (0, 0, False))[2] else "none"
     a.radius = min(a.radius, 250)
     a.remote_providers = [x.strip() for x in a.remote_providers.split(",") if x.strip()]
-    bad = [x for x in a.remote_providers if x not in PROVIDERS]
+    if a.fallback_provider == a.provider:
+        a.fallback_provider = ""
+    bad = [x for x in a.remote_providers + [a.fallback_provider] if x and x not in PROVIDERS]
     if bad:
         p.error(f"unknown provider(s): {', '.join(bad)}")
     return a

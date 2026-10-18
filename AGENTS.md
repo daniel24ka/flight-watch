@@ -108,6 +108,16 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
 ## Data sources: decisions and history
 
 - **adsb.lol** is the default feed (free, no key *for now*; it plans feeder-issued keys).
+- **adsb.fi** (opendata.adsb.fi, 19 Oct 2026) is the second feed: the local circle when adsb.lol does not
+  answer (`--fallback-provider`, `Monitor.second_feed`; 18 Oct 2026 adsb.lol answered ~110 of 360 polls an
+  hour, then none for 2 h twice) and a remote provider (`--remote-providers adsb.lol,adsb.fi`). Same readsb
+  fields, several ids per request; the circle is `/api/v3/lat/../lon/../dist/..` (v2's is deprecated, max
+  250 nm). Terms: personal, non-commercial, 1 request/s (`PROVIDERS` `rate_max` 30/min), credit adsb.fi with a
+  link; many invalid requests (400-429) can get the IP blocked for a while. No `dbFlags`: military aircraft
+  from its `/v2/mil` list (~140 worldwide, 16 KB) every `MIL_LIST_S` (10 min). The two feeds' coverage differs,
+  so an aircraft's silence inside the circle is judged only on polls of the feed that last heard it
+  (`Track.feed`; see LOST_CONTACT). No trace files there: backfill stays adsb.lol's (refused since 18 Oct).
+  Tests and replays pin one feed (`--fallback-provider '' --remote-providers adsb.lol`).
 - **airplanes.live** became feeder-only in 2026 and returns **HTTP 403**. Do not make it a
   default or add it as a provider unless the owner becomes a feeder.
 - **OpenSky** was rejected: its daily credit budget can't cover 10-second polling.
@@ -177,8 +187,8 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   landing nor low coverage, and none of the landing rules apply. MU5735 (21 Mar 2022, replay) was
   last heard at 3,225 ft falling 31,000 ft/min and gave no LOST_CONTACT before.
   Skipped when the feed suddenly returns far fewer aircraft (feed glitch, not mass disappearance), and for an
-  aircraft whose silence we did not see begin: no answered local poll within `BLIND_S` (180 s) after its last
-  report (`Monitor.ok_polls`; it is marked lost, not alerted). 18 Oct 2026: no poll answered 13:48-15:30 IDT, and 6
+  aircraft whose silence we did not see begin: no answered local poll (of the feed that last heard it, inside the
+  circle) within `BLIND_S` (180 s) after its last report (`Monitor.ok_polls`; it is marked lost, not alerted). 18 Oct 2026: no poll answered 13:48-15:30 IDT, and 6
   aircraft heard before it were "silent 6182s" at once. This replaced "no check after a poll > 45 s after the
   previous one", which with half the polls refused (HTTP 429) skipped the check most of the time.
   Before alerting, the aircraft's recent trace is read (`backfill`): reports our polls missed (HTTP 429,

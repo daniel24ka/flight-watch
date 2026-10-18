@@ -149,14 +149,18 @@ No flight tracks are stored. Each alert is one line in `alerts.jsonl` with links
 Tapping an ntfy notification opens the ADS-B Exchange live view; its buttons are
 Live, Replay (ADSBx) and FR24 flight. Telegram messages read like the posts (Map · Replay · FR24; Map is live while the flight flies).
 
-Distant flights can be queried on several networks (`--remote-providers`, default `adsb.lol`;
-e.g. `adsb.lol,adsb.fi`) because coverage outside Israel differs between them. A network that
-answers 401/403 is dropped for the rest of the run.
+Distant flights are queried on several networks (`--remote-providers`, default `adsb.lol,adsb.fi`)
+because coverage outside Israel differs between them. A network that answers 401/403 is dropped for
+the rest of the run.
 
 ## Data source
 
-Default is adsb.lol (also: `--provider adsb.fi`). These are free and need no key; see
-[Rate limits](#rate-limits). airplanes.live is feeder-only now (HTTP 403). OpenSky was not used as default: its daily credit
+Default is adsb.lol (also: `--provider adsb.fi`); when it does not answer a local poll (HTTP 429, an
+error) the circle is read from [adsb.fi](https://adsb.fi) instead (`--fallback-provider`, `''` = none).
+These are free and need no key; see [Rate limits](#rate-limits). adsb.fi's open data is for personal,
+non-commercial use at up to 1 request a second, crediting adsb.fi
+([terms](https://github.com/adsbfi/opendata)); its answers do not mark military aircraft, so its
+military list is read every 10 minutes. airplanes.live is feeder-only now (HTTP 403). OpenSky was not used as default: its daily credit
 budget doesn't cover 8,640 requests/day.
 
 ADS-B carries no origin/destination. Arrival/departure comes from the TLV flight board first,
