@@ -131,6 +131,11 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   10 Oct 2026, replayed with the live run's polls (276 successful, the rest refused) and the trace 8 s
   behind: dives raised at 08:55:25, 09:37:34 (from the trace, during refusals), 10:17:54, 10:58:04
   (live: none, 09:37:47, none, 10:58:38); ~1 trace request a minute. Trace 16 s behind: 09:37:47.
+  **Refused since 18 Oct 2026 ~15:30 IDT**: adsb.lol answers its trace files (`/data/traces/*` and
+  `/globe_history/*`) with HTTP 403 and a browser check ("Verification", a proof-of-work page; not to be
+  worked around). The fallback then asked 3 a poll, ~1,000 an hour, while the API refused our polls. After a
+  401 / 403 trace requests pause `TRACE_REFUSED_S` (30 min), doubling up to 6 h. Without the trace: no
+  backfill, and the map (`docs/flight_map.html`) cannot draw or analyse past flights (it says so).
 - **Routes**: adsb.lol's `routeset` POST now answers 201 with no body and its per-callsign route
   endpoint redirects to `vrs-standing-data.adsb.lol`; the same Virtual Radar Server standing
   data (CC0) is on GitHub as `vradarserver/standing-data` (`routes/schema-01/W/WZZ-3.csv`:
@@ -171,8 +176,11 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   rate <= -`--vrate`, backed by the altitude lost since the report before): that is a crash, not a
   landing nor low coverage, and none of the landing rules apply. MU5735 (21 Mar 2022, replay) was
   last heard at 3,225 ft falling 31,000 ft/min and gave no LOST_CONTACT before.
-  Skipped entirely after our own outage or when the
-  feed suddenly returns far fewer aircraft (feed glitch, not mass disappearance).
+  Skipped when the feed suddenly returns far fewer aircraft (feed glitch, not mass disappearance), and for an
+  aircraft whose silence we did not see begin: no answered local poll within `BLIND_S` (180 s) after its last
+  report (`Monitor.ok_polls`; it is marked lost, not alerted). 18 Oct 2026: no poll answered 13:48-15:30 IDT, and 6
+  aircraft heard before it were "silent 6182s" at once. This replaced "no check after a poll > 45 s after the
+  previous one", which with half the polls refused (HTTP 429) skipped the check most of the time.
   Before alerting, the aircraft's recent trace is read (`backfill`): reports our polls missed (HTTP 429,
   between polls) go through every check at their own time (alerts marked `from_trace`, "[from the feed's
   recent trace: missed by our polls]") and the silence is judged again from its last report; a trace that
@@ -192,6 +200,12 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   learned route direction reset. Before this, an arrival parked overnight and given its morning
   departure's callsign (LOT7MA -> LOT4CG) was RETURNED: 70 false alarms in one night (6 Oct 2026),
   and an aircraft on the ground repeated DIVERSION / RETURNED after every cooldown.
+  A landing we did not see ends it too (`MISSED_LANDING_S` / `_KT`: heard again after 40 min having averaged
+  < 150 kt; 18 Oct 2026, API refusals for hours: ELY353 TLV -> MUC unheard 100 min, then climbing out of Munich
+  still as ELY353, and HYS236 TLV -> OTP unheard 3.7 h, back on its way to TLV - both "TLV departure heading
+  back"). `Monitor.end_leg`: a departure landing away from TLV, or an arrival at it, has flown that callsign
+  (`Track.flown_cs`): neither the board row nor the route data's direction applies to it again until the
+  callsign changes.
   A landing elsewhere must be believable (13 Oct 2026; all 4 DIVERSIONs of the run of 11-12 Oct were
   arrivals on approach to TLV with spoofed GPS - ETD3QF, AIZ282, ISR972, ELY5462): "on the ground" within
   `LANDING_AIRPORT_NM` (5) of an airport of the local `standing-data/` checkout (`StandingData.airfield_near`;
@@ -217,7 +231,8 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   rate threshold flagged every normal jet climb-out (+4000-4800 ft/min at 8000 ft) and
   speed-brake descent. Limits: descent 10 deg everywhere (normal max seen ~8, glide slope 3),
   climb 12 deg en route and 18 deg within 30 nm of an airport below 15,000 ft (bizjets reach
-  ~13). Near-airport traffic is still checked - a too-steep approach alerts. `--vrate`
+  ~13; "an airport": the region's list, or any of the standing data's within 30 nm - ELY353 climbing out
+  of Munich at 12.1 deg alerted, 18 Oct 2026). Near-airport traffic is still checked - a too-steep approach alerts. `--vrate`
   (8000 ft/min) alerts whatever the angle. The reported rate must be backed by the altitude
   history (rejects single bad values): the report nearest 30 s old within 15-90 s (a longer span only
   averages a real dive down), else reports 90 s back from the recent trace (`fill_history`); with none
@@ -236,6 +251,11 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   positions over 1-3 min, and the alert says so. One set of limits for all (the owner: the simpler the
   better); alerts on military and on light / private aircraft carry a note that steep profiles are common
   there (4 of the 15 VERTICAL_RATE alerts on disk: GLF5 x2, C295, P750).
+  A military aircraft that is not large (trainers, fighters, light military types) gets one alert of any kind,
+  then only EMERGENCY until `MILITARY_QUIET_S` (2 h) after the last alert it would have had (`Track.mil_quiet`).
+  18 Oct 2026, Jordan: CHLE1B (PC21) 15 alerts in 31 min of aerobatics (14 on Telegram, "skydiving pattern"
+  among them - such types no longer count as jump planes), 7436ac (AT8T) 17 with its position jumping 28 nm
+  back and forth. Cost: a real accident of such an aircraft after its first alert is only logged.
 - **ALTITUDE_WOBBLE / EARLY_DESCENT** (16 Oct 2026, from the incident fixtures; airline callsign and large
   aircraft only). Wobble: the altitude reverses 3+ times (each leg >= 150 ft, `reversals`) within 3 min below
   FL250, with the aircraft's own vertical rate both >= +500 and <= -500 (a lone bad altitude is 2 reversals with a
@@ -244,7 +264,9 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   the altitude's second difference: it ranked single glitches first (an A20N at FL380) and missed ET302. A 30 s
   window is too short (only JT610 reaches 3 in 60 s); the check uses the track's own samples, no extra requests.
   Early descent: 1,000 ft below the climb's peak (held on two reports) within 10 min of take-off
-  (`Track.takeoff`: ground -> air, or first heard climbing below 2,000 ft). AS1282 01:14:24, 13 min before
+  (`Track.takeoff`: ground -> air within `TAKEOFF_MAX_GAP_S` (3 min) below 10,000 ft, or first heard climbing
+  below 2,000 ft; 18 Oct 2026: on the ground before hours of refused polls and descending into its destination
+  after them was "1-8 min after take-off", 11 EARLY_DESCENTs). AS1282 01:14:24, 13 min before
   RETURNED; of 184 large-aircraft take-offs the nearest was a 400 ft step by an E75L at 9.6 min.
 - **EMERGENCY**: alerts on squawk *transition* into 7500/7600/7700, not every cooldown.
 - **COURSE_CHANGE**: a large reversal (>= 70 deg in 2 min) above `--turn-min-alt`. Not
@@ -282,7 +304,10 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   height, then a dive); military transports drop paratroopers and are only described.
 - **HOLDING**: an airliner (airline callsign, not military) circling - >= 330 deg of turn one way
   in 12 min within 25 nm - for `--holding-minutes` (30), again after each further 30 min. Military
-  aircraft and non-airline traffic orbit as their job (tankers, patrols, training) and are silent.
+  aircraft and non-airline traffic orbit as their job (tankers, patrols, training) and are silent, and so is
+  circling below `HOLDING_LOCAL_ALT` (10,000 ft) with no board row nor route (circuits, training: RJA017, A321
+  JY-AYV, 18 Oct 2026, 4,300 ft 15 nm east of Amman 2 h after taking off there; a flight that can't land is a
+  scheduled one, holding higher).
 - **SHARP_TURN**: implied bank angle from the turn rate and speed >= `--max-bank` (35 deg),
   everywhere including near airports. Airliners stay below ~25-30; FZ1073's U-turn was a
   normal-rate turn (~25 deg), which is why reversals and sharpness are separate alerts.
@@ -311,7 +336,9 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   Amman's own traffic over Israel is exempt (`amman_traffic`, 13 Oct 2026: Royal Jordanian crosses at
   31.8-32.1 N daily, 5 alerts in each of two runs): inbound from the west pointing at Amman, on approach from
   the east (<= 60 nm, low or descending), or climbing out in the 20 min after being on the ground there /
-  first heard low and climbing. Kept on the owner's wish: a flight from the east flying on past Amman, and
+  first heard low and climbing. Not either: a turn toward Israel by an aircraft with no route that has stayed
+  within 40 nm of Amman below 15,000 ft for 20 min (`around_amman`; RJA017 above), though about to enter still
+  is. Kept on the owner's wish: a flight from the east flying on past Amman, and
   anything else about to cross. The surroundings of Eilat (`EILAT_ALLOW_NM`, 50 km = 27 nm) are not counted
   (`over_israel`): the airways over Taba / Aqaba pass a few km south and a straight line from them clipped the
   tip (5 alerts, none entered). 25 km at first; widened because NMA445 from Jordan toward Sinai pointed 14-27 nm
@@ -414,7 +441,8 @@ Telegram gets the post's wording as HTML (`Notifier.telegram_text`), without `--
 the message's `[also: ...]` names another kind; 83 of the 429 would have been sent. Jamming / spoofing is daily here:
 NIC 0 is the aircraft saying it does not trust its GPS, while it flies on inertial and its track looks normal (16 Oct
 2026: an episode near Amman went out as a start and an end with nothing to see on the map). So GPS_DEGRADED is skipped,
-and GPS_SPOOFING sends one start in `TG_SPOOF_S` (6 h) and never an end; all stay in the files.
+and GPS_SPOOFING sends one start in `TG_SPOOF_S` (6 h) and never an end; all stay in the files. MASS_SILENCE is
+skipped too (18 Oct 2026: 9 of 66 messages, nothing to see on a map, mostly while the API refused our polls).
 `--telegram-to chat|channel` picks `TELEGRAM_CHAT_ID` (default) or `TELEGRAM_CHANNEL_ID` (the public, read-only
 channel); `monitor.sh` sets it from `SENDTO` (channel).
 Each message is also appended to `--telegram-posts` (`posts_telegram.jsonl`, with `sent`), apart from `posts.jsonl`.

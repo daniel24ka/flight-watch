@@ -121,7 +121,7 @@ the announcement feed; `-vv` adds debug detail. Alerts are appended to `alerts.j
 (`--jsonl ''` / `--posts ''` to disable). Telegram: set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`
 (a chat with the bot), or with `--telegram-to channel` (`monitor.sh`: `SENDTO=channel`, the default there) `TELEGRAM_CHANNEL_ID` (a channel where the
 bot is an admin: `@name` or its `-100...` id; only admins can write there). `--telegram-skip`
-(`TELEGRAM_SKIP`; default `LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP,GPS_DEGRADED`) leaves those kinds out of Telegram;
+(`TELEGRAM_SKIP`; default `LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP,GPS_DEGRADED,MASS_SILENCE`) leaves those kinds out of Telegram;
 it gets one `GPS_SPOOFING` start in 6 h and never an episode's end
 unless the flight also has an alert of another kind. Each message sent is also appended to
 `posts_telegram.jsonl` (`--telegram-posts`; `monitor.sh`: `posts_telegram_YYYY-MM-DD.jsonl`), `"sent": false` when Telegram refused it.

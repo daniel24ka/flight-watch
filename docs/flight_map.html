@@ -375,6 +375,9 @@ function traceProblem(errors) {
   const down = errors.filter(m => !/HTTP 404$/.test(m));
   if (down.length) {
     const why = (/HTTP (\d+)$/.exec(down[0]) || [])[1];
+    // 18 Oct 2026: adsb.lol began answering its trace files with a browser check ("Verification") - 403
+    if (why === "403") return "adsb.lol refuses its trace files to programs (HTTP 403, a browser check), " +
+                              "so this flight's trace can't be loaded here. ADS-B Exchange's replay still shows it.";
     return `adsb.lol is not answering right now (${why ? "HTTP " + why : "no connection"}), so its trace of this flight ` +
            "can't be loaded. Try again later: ↻ refresh, then \"analyse track\".";
   }

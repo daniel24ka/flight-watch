@@ -26,6 +26,7 @@ Alerts:
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import glob
 import html
@@ -82,6 +83,7 @@ STANDING_DATA = "https://raw.githubusercontent.com/vradarserver/standing-data/ma
 # api.adsb.lol allowed ~3.5 req/min. Rows: [dt, lat, lon, alt|"ground", gs, track, flags, vrate,
 # {details}|None, source, geometric alt, ...]; flags 1 stale position, 8 alt is GPS altitude.
 TRACE_RECENT = "https://adsb.lol/data/traces/{xx}/trace_recent_{hex}.json"
+TRACE_REFUSED_S, TRACE_REFUSED_MAX_S = 1800, 6 * 3600  # pause after HTTP 401/403 on a trace, doubling
 ROUTE_TTL = 6 * 3600
 RELAY_URL = "https://flight-watch-relay.yuvharpaz.workers.dev"  # tools/cors_worker.js (Cloudflare)
 VIEWER_URL = "https://yuval-harpaz.github.io/flight-watch/flight_map.html"  # docs/ on GitHub Pages
@@ -158,6 +160,14 @@ WOBBLE_TURNS, WOBBLE_FT, WOBBLE_S, WOBBLE_MAX_ALT, WOBBLE_RATE = 3, 150, 180, 25
 # 7 min after take-off at ~2,000 ft/min, neither steep nor fast; the first descent of the other 184
 # large-aircraft take-offs in the fixtures came later (a 400 ft step by an E75L at 9.6 min).
 EARLY_DROP, EARLY_MIN = 1000, 10
+# A track heard again after MISSED_LANDING_S having moved less than MISSED_LANDING_KT on average landed
+# in between: 18 Oct 2026, ELY353 (TLV -> MUC) unheard 100 min, then 70 nm on climbing out of Munich, and
+# HYS236 (TLV -> OTP) unheard 3.7 h, then 145 nm on, back toward TLV: both "TLV departure heading back".
+MISSED_LANDING_S, MISSED_LANDING_KT = 2400, 150
+AMM_LOCAL_NM, AMM_LOCAL_S = 40, 1200  # around_amman: within 40 nm of Amman for 20 min
+HOLDING_LOCAL_ALT = 10000  # circling lower with no route is training, not holding (check_holding)
+BLIND_S = 180  # no answered local poll for this long after an aircraft's last report: we did not see it go
+TAKEOFF_MAX_GAP_S, TAKEOFF_MAX_ALT = 180, 10000  # a take-off is seen: ground, then airborne within 3 min, low
 # conditions that last while a flight keeps flying the same way: repeated every --repeat-minutes, not
 # every --cooldown (6 Oct 2026: one tanker over Israel for 75 min gave 15 TOWARD_ISRAEL alerts)
 PERSISTING = {"TOWARD_ISRAEL", "OFF_COURSE", "TURNING_BACK"}
@@ -165,6 +175,7 @@ PERSISTING = {"TOWARD_ISRAEL", "OFF_COURSE", "TURNING_BACK"}
 # no other anomaly) is only logged: survey / patrol lines. 14 Oct 2026: G-FPLD (CLB230, BE20) and 4X-CVH
 # (BDK09, G280) flew back and forth for hours west of Israel: 12 of 13 COURSE_CHANGEs, 3 of 4 SHARP_TURNs.
 TURN_KINDS, PATTERN_S = {"COURSE_CHANGE", "SHARP_TURN"}, 7200
+MILITARY_QUIET_S = 7200  # a military aircraft that is not large: one alert, then quiet (Monitor.alert)
 # GPS spoofing (Monitor.spoofed): an aircraft reported motionless at altitude is spoofed unless it
 # climbs / descends at least this fast (a stall or spin falls 10,000+ ft/min) - then it is checked.
 SPOOF_MAX_RATE = 6000
@@ -723,8 +734,11 @@ class Track:
     leg_start: float = 0.0   # data time its callsign last changed: course checks use only what came after
     nic_bad: Sample | None = None  # its last NIC-0 report dropped as out of reach (see integrity)
     amm_dep: float = 0.0     # data time it was last on the ground at Amman / first heard climbing out of it
+    mil_quiet: float = 0.0   # military, not large: data time of its last alert or suppressed one (alert())
+    amm_near: float = 0.0    # data time since which it has stayed within AMM_LOCAL_NM of Amman
     takeoff: float = 0.0     # data time of its take-off (left the ground, or first heard climbing low)
     climb_peak: int = 0      # highest altitude since take-off held on two reports in a row (EARLY_DESCENT)
+    flown_cs: str = ""       # a callsign whose flight to / from our airport it has completed (end_leg)
     sent: deque = field(default_factory=lambda: deque(maxlen=MAP_ALERTS))  # (kind, data time) of its alerts, for map links
 
     @property
@@ -1264,6 +1278,7 @@ class Monitor:
         if schedule and self.standing:
             schedule.resolve = self.resolve_airline
         self.last_ok: float | None = None
+        self.ok_polls: deque = deque(maxlen=2000)  # data times of the local polls that were answered
         self.shared_at = 0.0  # data time of the last callsign push to the relay (share_callsigns)
         self.last_count = 0
         self.stats = {}
@@ -1283,6 +1298,7 @@ class Monitor:
         self.disc_round = -1e9
         self.traces: dict[str, tuple[float, list]] = {}  # hex -> (clock, parsed recent trace)
         self.trace_left = 0       # trace requests still allowed this cycle
+        self.trace_refused = (0.0, 0.0)  # (clock until which the trace host is not asked, last pause s)
         self.noted: dict[tuple, float] = {}  # (hex, key) -> clock of the last log remark (see note)
         self.from_trace = False   # checks are running on reports read from a trace (alert() says so)
         self.gs_from = ""         # where trusted_gs took an MLAT report's speed from
@@ -1534,7 +1550,7 @@ class Monitor:
         a = self.args
         if t.sched:
             return t.sched.direction, t.sched.route(a.airport)
-        route = self.routes.get(t.callsign, (0, None))[1]
+        route = self.routes.get(t.callsign, (0, None))[1] if t.callsign != t.flown_cs else None
         codes = {a.airport, a.icao}
         if route:
             parts = route.split("-")
@@ -1595,7 +1611,7 @@ class Monitor:
             t.military = t.military or bool(int(ac.get("dbFlags") or 0) & 1)
             t.last_msg = max(t.last_msg, msg_t)
             if self.schedule and t.callsign in self.schedule.by_callsign:
-                t.sched = self.schedule.by_callsign[t.callsign]
+                t.sched = None if t.callsign == t.flown_cs else self.schedule.by_callsign[t.callsign]
             prev = t.last
             # GPS and barometric altitude differ by hundreds of feet (4XDAN, 10 Oct 2026: +500-600):
             # a GPS value among barometric ones is a fake step. Converted with this aircraft's offset.
@@ -1619,13 +1635,13 @@ class Monitor:
         for t, prev, ac, spoofed in updated:
             self.check_track(t, prev, ac, spoofed, server_now)
 
-        # Don't declare mass "lost contact" after our own outage or a feed glitch.
-        gap_ok = self.last_ok is not None and server_now - self.last_ok < 3 * a.interval + 15
+        # Don't declare mass "lost contact" after a feed glitch; after our own outage, see check_lost.
         feed_ok = not (self.last_count > 10 and len(local) < 0.5 * self.last_count)
         if not feed_ok:
             log.warning("feed returned %d aircraft (was %d) - skipping lost-contact check",
                         len(local), self.last_count)
-        if gap_ok and feed_ok:
+        self.ok_polls.append(server_now)
+        if feed_ok:
             self.check_lost(server_now)
         self.end_spoofs(server_now)
 
@@ -1639,6 +1655,19 @@ class Monitor:
                       "followed_lost": sum(t.followed and t.follow_why == "LOST_CONTACT" for t in self.tracks.values()),
                       "scheduled": len(self.schedule.flights) if self.schedule else 0,
                       "rate": b.rate}
+
+    def end_leg(self, t: Track, d: float, unseen: bool = False) -> None:
+        """A landing (seen at taxi speed, or `unseen`: see MISSED_LANDING_S) `d` nm from our airport ends
+        the leg: its next flight must not inherit it - an arrival turning around as a departure was
+        reported as RETURNED (LOT7MA -> LOT4CG at TLV, 6 Oct 2026). A board departure that landed away
+        from our airport (an arrival at it) has flown: the same callsign later is its next flight -
+        ELY353 (TLV -> MUC, 18 Oct 2026) climbed out of Munich still as ELY353 and was "heading back to TLV"."""
+        kind = self.classify(t)[0]
+        if kind in ("DEP", "ARR") and (kind == "DEP") == (d > 15):
+            t.flown_cs, t.sched = t.callsign, None  # (the board row, or the route data's direction)
+        t.was_airborne, t.max_dist, t.route_dir, t.max_alt = False, 0.0, 0, 0
+        if unseen:
+            t.takeoff, t.leg_start = 0.0, t.last.t
 
     def new_callsign(self, t: Track, new: str, now: float) -> None:
         """Take up the callsign the feed reports. A changed one waits CALLSIGN_HOLD s, and is refused
@@ -1666,6 +1695,7 @@ class Monitor:
             if now - t.cs_pending[1] < CALLSIGN_HOLD:
                 return
             log.info("%s is now %s: a new leg", t.label(), new)
+            t.flown_cs = ""
             t.sched, t.route_dir, t.was_airborne, t.max_dist, t.leg_start = None, 0, False, 0.0, now
             t.max_alt = 0
         t.callsign, t.cs_pending = new, None
@@ -1691,6 +1721,12 @@ class Monitor:
         if s is None:
             return
         d = self.dist(s)
+        if prev is not None and not prev.on_ground and s.t - prev.t >= MISSED_LANDING_S:
+            moved = haversine_nm(prev.lat, prev.lon, s.lat, s.lon)
+            if moved / ((s.t - prev.t) / 3600) < MISSED_LANDING_KT:
+                log.info("%s heard again after %.0f min only %.0f nm on: it landed in between - a new leg",
+                         t.label(), (s.t - prev.t) / 60, moved)
+                self.end_leg(t, min(self.dist(prev), d), unseen=True)
         kind, route = self.classify(t)
         if not t.followed and (kind in CONFIRMED or (kind == "DEP?" and d < 15 and airline_like(t))):
             t.followed = True
@@ -1706,11 +1742,15 @@ class Monitor:
         if (s.on_ground and amm < 5) or (len(t.samples) <= 2 and amm < 15 and (s.alt or 0) < 8000
                                          and (s.vrate or 0) > 300):
             t.amm_dep = s.t  # (first heard climbing out: the ground at Amman is often not covered)
+        t.amm_near = (t.amm_near or s.t) if amm <= AMM_LOCAL_NM else 0.0
         if s.on_ground and (s.gs is None or s.gs < 50):
             t.takeoff = 0.0
-        elif not s.on_ground and not t.takeoff and not t.was_airborne and (
-                (prev is not None and prev.on_ground)
+        elif not s.on_ground and not t.takeoff and not t.was_airborne and (s.alt or 0) < TAKEOFF_MAX_ALT and (
+                (prev is not None and prev.on_ground and s.t - prev.t <= TAKEOFF_MAX_GAP_S)
                 or (prev is None and (s.alt or 0) < 2000 and (s.vrate or 0) > 0)):
+            # (on the ground before a gap in our polls and high after it: when it took off is unknown -
+            # 18 Oct 2026, 11 EARLY_DESCENTs on arrivals descending into their destinations, "1-8 min after
+            # take-off", after the API refused our polls for up to 2 h)
             t.takeoff, t.climb_peak = s.t, s.alt or 0
         self.check_emergency(t, ac)
         self.check_skydive(t)  # before check_vrate, so the dive's alert says what it is
@@ -1732,7 +1772,7 @@ class Monitor:
             # Landed (at taxi speed, so not a stray "ground" reading in flight): the leg is
             # over. Otherwise its next flight inherits it - an arrival turning around as a
             # departure was reported as RETURNED (LOT7MA -> LOT4CG at TLV, 6 Oct 2026).
-            t.was_airborne, t.max_dist, t.route_dir, t.max_alt = False, 0.0, 0, 0
+            self.end_leg(t, d)
 
     # ---- an aircraft's recent trace: what our polls missed
     def recent_trace(self, t: Track) -> list[tuple[Sample, dict]] | None:
@@ -1745,15 +1785,25 @@ class Monitor:
         hit = self.traces.get(t.hex)
         if hit and self.clock() - hit[0] < 5:  # (asked already this cycle)
             return hit[1]
-        if not a.trace_url or self.trace_left <= 0:
+        if not a.trace_url or self.trace_left <= 0 or self.clock() < self.trace_refused[0]:
             return None
         self.trace_left -= 1
         try:
             data = self.http.get_json(a.trace_url.format(xx=t.hex[-2:], hex=t.hex), LOW)
             rows, base = data["trace"], float(data["timestamp"])
         except (requests.RequestException, ValueError, KeyError, TypeError) as e:
+            code = getattr(getattr(e, "response", None), "status_code", None)
+            if code in (401, 403):
+                # Refused, not busy: from 18 Oct 2026 15:30 IDT adsb.lol answered every trace file with
+                # 403 and a browser check ("Verification", a proof-of-work page), and the fallback asked
+                # 3 a poll (~1,000 an hour) while the API refused our polls. Not asked again for a while.
+                pause = min(max(2 * self.trace_refused[1], TRACE_REFUSED_S), TRACE_REFUSED_MAX_S)
+                self.trace_refused = (self.clock() + pause, pause)
+                log.warning("trace files refused (HTTP %s) - not asked for %.0f min", code, pause / 60)
+                return None
             log.info("%s: no recent trace (%s)", t.label(), e)
             return None
+        self.trace_refused = (0.0, 0.0)
         out, info, offset = [], {}, t.geo_offset
         for r in rows:
             try:
@@ -1908,7 +1958,14 @@ class Monitor:
         angle = path_angle(s.vrate, gs) if gs else None
         apt, ad = nearest_airport(s.lat, s.lon)
         terminal = ad <= a.terminal_radius and s.alt < a.terminal_alt
-        limit = (a.terminal_climb_angle if terminal else a.climb_angle) if s.vrate > 0 else a.descent_angle
+        if (not terminal and s.alt < a.terminal_alt and s.vrate > 0 and angle is not None
+                and a.climb_angle <= angle < a.terminal_climb_angle and abs(s.vrate) < a.vrate and self.standing):
+            # far from the region's airports: any airport (ELY353 climbing out of Munich at 12.1 deg,
+            # 18 Oct 2026, judged by the en-route limit)
+            field = self.standing.airfield_near(s.lat, s.lon)
+            if field and field[1] <= a.terminal_radius:
+                (apt, ad), terminal = field, True
+        limit =(a.terminal_climb_angle if terminal else a.climb_angle) if s.vrate > 0 else a.descent_angle
         if not ((angle is not None and abs(angle) >= limit) or abs(s.vrate) >= a.vrate):
             return
         computed = t.computed_vrate(30)
@@ -2080,6 +2137,8 @@ class Monitor:
         s = t.last
         if s.on_ground or s.alt is None:
             return
+        if t.military and not t.large and t.actype not in JUMP_PLANES:
+            return  # aerobatics: CHLE1B (PC21, Jordan, 18 Oct 2026) "40 kt at 16,500 ft then a dive", 3 times
         computed = t.computed_vrate(30)
         if not ((s.vrate or 0) <= -SKYDIVE_DESCENT or (computed or 0) <= -SKYDIVE_DESCENT):
             return
@@ -2158,6 +2217,12 @@ class Monitor:
         periods = int(minutes // a.holding_minutes)
         if periods > t.hold_alerted:
             t.hold_alerted = periods
+            if (s.alt or 0) < HOLDING_LOCAL_ALT and not t.sched and not self.routes.get(t.callsign, (0, None))[1]:
+                # no route and low: circuits / training (RJA017 at 4,300 ft near Amman, 18 Oct 2026); a
+                # flight that can't land is a scheduled one, holding higher
+                log.info("%s circling for %.0f min within ~%.0f nm at %s ft with no route - training / "
+                         "circuits, not alerted", t.label(), minutes, radius, s.alt)
+                return
             self.alert(t, "HOLDING", f"circling for {minutes:.0f} min within ~{radius:.0f} nm at {s.alt} ft "
                        f"({self.dist(s):.0f} nm from {a.airport})", severity=minutes, force=True)
 
@@ -2399,6 +2464,17 @@ class Monitor:
             return "on approach to Amman"
         return ""
 
+    def around_amman(self, t: Track) -> str:
+        """Flying around Amman with no route (training, circuits, air work), else "": RJA017 (A321 JY-AYV,
+        18 Oct 2026) took off from Amman and was still within 15 nm of it 2 h 15 min later, circling at 4,300 ft;
+        a turn at 13,300 ft pointed it at Israel 12 min away (TOWARD_ISRAEL) and its circling was HOLDING. Its
+        turns toward Israel are not alerted; about to enter Israeli airspace still is."""
+        s = t.last
+        if (not t.amm_near or s.t - t.amm_near < AMM_LOCAL_S or (s.alt or 0) >= 15000 or t.sched
+                or self.routes.get(t.callsign, (0, None))[1]):
+            return ""
+        return f"flying around Amman for {(s.t - t.amm_near) / 60:.0f} min with no route (training?)"
+
     def check_protected(self, t: Track, kind: str, route: str | None) -> None:
         """A flight not bound for Israel turning toward it, or about to enter its airspace."""
         a, s = self.args, t.last
@@ -2423,6 +2499,7 @@ class Monitor:
             #         level at 8,925 ft turning onto its approach 11 nm from Damascus, landed 3 min later
         if self.amman_traffic(t):
             return
+        local = self.around_amman(t)
         if self.toward_own_airport(t):
             return  # pointing at its own destination (or origin) beyond Israel
         prev = t.samples[-2] if len(t.samples) > 1 else None
@@ -2435,6 +2512,9 @@ class Monitor:
                   and heading_diff(s.track, old.track) >= a.toward_turn
                   and minutes_to(ISRAEL, old.lat, old.lon, old.track, old.gs or s.gs, 30, over_israel) is None)
         what = f"not bound for Israel ({kind}{' ' + route if route else ''})"
+        if turned and local:
+            self.note(t, "around-amman", f"turned toward Israeli airspace, {local} - not alerted")
+            return
         if turned and not self.zones.expected(s.lat, s.lon, s.track):
             msg = (f"{what} - turned {old.track:.0f} -> {s.track:.0f} deg toward Israeli airspace, "
                    f"~{eta:.0f} min away, at {s.alt} ft")
@@ -2447,9 +2527,23 @@ class Monitor:
 
     def check_lost(self, now: float) -> None:
         a = self.args
+        polls = list(self.ok_polls)
         for t in self.tracks.values():
             s = t.last
             if t.lost or not s or s.on_ground or len(t.samples) < 3:
+                continue
+            # Its silence counts only if we saw it begin: an answered poll soon after its last report. After
+            # our own outage (the API refusing or not answering; 18 Oct 2026, 13:48-15:30 IDT) whatever was
+            # last heard before it may have landed or flown on meanwhile: 6 false LOST_CONTACTs "silent
+            # 6182s" when polls came back. (Formerly no check at all after any poll more than 45 s after
+            # the previous one, so while the API refused half our polls losses waited for two in a row.)
+            i = bisect.bisect_right(polls, t.last_msg)
+            seen = polls[i] if i < len(polls) else now
+            if seen - t.last_msg > BLIND_S:
+                t.lost, t.lost_alerted = True, False
+                log.info("%s last heard %s, before our own outage (next answered poll %s) - its fate unknown, "
+                         "not alerted", t.label(), time.strftime("%H:%M:%S", time.gmtime(t.last_msg)),
+                         time.strftime("%H:%M:%S", time.gmtime(seen)))
                 continue
             d = self.dist(s)
             remote = d > a.radius - a.edge_margin
@@ -2828,6 +2922,18 @@ class Monitor:
             k["told"] = True  # its first dive is alerted, as a check that the monitor sees them
             msg += (f" - probably a skydiving ride; no further alerts on it until {SKYDIVE_QUIET_S / 3600:.0f} h "
                     "after its last lift, except an emergency squawk")
+        if t.military and not t.large and kind != "EMERGENCY" and not (k and k.get("quiet")):
+            # trainers, fighters, light military aircraft manoeuvre as their job: one alert (a check that
+            # the monitor sees them), then only an emergency squawk for MILITARY_QUIET_S after the last
+            # suppressed one. 18 Oct 2026, Jordan: CHLE1B (PC21) 15 alerts in 31 min of aerobatics (14 on
+            # Telegram); 7436ac (AT8T, RAPTR / RAAD39) 17, its position jumping 28 nm back and forth.
+            if t.mil_quiet and now - t.mil_quiet <= MILITARY_QUIET_S:
+                t.mil_quiet = now
+                log.info("%s %s - military aircraft manoeuvring, not alerted: %s", t.label(), kind, msg)
+                return False
+            t.mil_quiet = now
+            msg += (f" - military aircraft: no further alerts on it until {MILITARY_QUIET_S / 3600:.0f} h after "
+                    "its last manoeuvre, except an emergency squawk")
         traffic, route = self.classify(t)
         if a.airport_traffic_only and traffic not in AIRPORT_TRAFFIC:
             return False
@@ -3007,7 +3113,7 @@ def parse_args(argv=None):
                    help="our flight map page, linked from alerts and posts as 'Map' ('' to leave out)")
     g.add_argument("--thread-hours", type=float, default=6,
                    help="later alerts on a flight reply to its thread for this long")
-    g.add_argument("--telegram-skip", default=os.getenv("TELEGRAM_SKIP", "LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP,GPS_DEGRADED"),
+    g.add_argument("--telegram-skip", default=os.getenv("TELEGRAM_SKIP", "LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP,GPS_DEGRADED,MASS_SILENCE"),
                    help="alert kinds not sent to Telegram (still in the files and ntfy), unless the "
                         "flight also has an alert of another kind ('' sends everything)")
     g.add_argument("--telegram-to", choices=("chat", "channel"), default="chat",

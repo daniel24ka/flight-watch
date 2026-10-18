@@ -58,6 +58,7 @@ class FakeFeed:
         self.local = set()        # hexes inside the /point circle
         self.calls = []           # (method, path)
         self.limited = set()      # path prefixes answered with 429
+        self.refused = set()      # path prefixes answered with 403 (adsb.lol's browser check, 18 Oct 2026)
         self.route_status = 200   # standing-data host: 200 serves self.files, else this status
         self.files = {}           # standing-data path ("routes/schema-01/W/WZZ-3.csv") -> CSV text
         self.headers = {}
@@ -76,6 +77,8 @@ class FakeFeed:
         self.calls.append((method, path))
         if any(path.startswith(p) for p in self.limited):
             return FakeResponse(429, url=url)
+        if any(path.startswith(p) for p in self.refused):
+            return FakeResponse(403, "<title>Verification</title>", url=url)
         now_ms = self.clock() * 1000
         if "/point/" in path:
             return FakeResponse(200, {"now": now_ms, "ac": [self.ac(h) for h in sorted(self.local)]})
@@ -1853,3 +1856,101 @@ class PlotProbeTests(unittest.TestCase):
                for i, st in enumerate(states) if i not in (9, 10)]  # (no history 30-45 s before the dive)
         eps = plot_alert.vrate_episodes(air, {"hex": "739215", "callsign": "4XDAN", "type": "P750"})
         self.assertEqual([e["dir"] for e in eps], ["DESCENT"])
+
+
+class Run18OctTests(unittest.TestCase):
+    """False alarms of the run of 18 Oct 2026 (the API refused most polls for hours)."""
+
+    def test_aircraft_last_heard_before_our_outage_is_not_lost(self):
+        """13:48-15:30 IDT no poll answered; 6 aircraft heard before it were "silent 6182s" when polls came back."""
+        mon, feed, clock, alerts = make(["--no-routes"])
+        feed.local.add("999999")
+        feed.aircraft["999999"] = airborne(31.0, 34.0, 20000, flight="KEEP1")
+        fly(mon, feed, clock, "4a3122", path(31.9, 35.0, [300] * 6, [9000] * 6, gs=250), flight="AIZ1806")
+        feed.local.discard("4a3122")
+        del feed.aircraft["4a3122"]  # (landed meanwhile)
+        feed.limited.add("/v2/")
+        for _ in range(60):  # 10 min of refused polls
+            step(mon, clock)
+        feed.limited.clear()
+        for _ in range(30):
+            step(mon, clock)
+        self.assertEqual(kinds(alerts), [])
+        self.assertTrue(mon.tracks["4a3122"].lost)
+
+    def test_silence_seen_to_begin_while_polls_are_sparse_is_still_lost_contact(self):
+        """Answered polls 60 s apart (the rest refused): formerly no lost-contact check at all."""
+        mon, feed, clock, alerts = make(["--no-routes"])
+        feed.local.add("999999")
+        feed.aircraft["999999"] = airborne(31.0, 34.0, 20000, flight="KEEP1")
+        fly(mon, feed, clock, "4a3122", path(32.4, 34.0, [300] * 4, [20000] * 4, gs=450, dt=60), dt=60,
+            flight="AIZ1806")
+        feed.local.discard("4a3122")
+        del feed.aircraft["4a3122"]
+        for _ in range(5):
+            step(mon, clock, 60)
+        self.assertEqual(kinds(alerts), ["LOST_CONTACT"])
+
+    def test_refused_trace_files_are_not_asked_again_for_a_while(self):
+        mon, feed, clock, alerts = make(["--no-routes"])
+        feed.refused.add("/data/traces/")
+        t = mon.tracks.setdefault("739215", fw.Track("739215"))
+        for _ in range(5):
+            mon.trace_left = 3
+            self.assertIsNone(mon.recent_trace(t))
+            clock.t += 10
+        self.assertEqual(sum(p.startswith("/data/traces/") for _, p in feed.calls), 1)
+        clock.t += fw.TRACE_REFUSED_S
+        mon.trace_left = 3
+        mon.recent_trace(t)
+        self.assertEqual(sum(p.startswith("/data/traces/") for _, p in feed.calls), 2)
+        self.assertEqual(mon.trace_refused[1], 2 * fw.TRACE_REFUSED_S)  # refused again: a longer pause
+
+    def test_departure_heard_again_climbing_out_of_its_destination_is_its_next_flight(self):
+        """ELY353 TLV -> MUC, unheard 100 min, then climbing out of Munich still as ELY353, turning toward
+        TLV: "TLV departure heading back to TLV, 1427 nm out"."""
+        mon, feed, clock, alerts = with_board([board_row("LY", "353", "D", local_time(mon_clock(), -3), "MUC")])
+        ident = dict(flight="ELY353", r="4X-EKT", t="B738")
+        fly(mon, feed, clock, "738061", path(47.24, 14.32, [306] * 6, [31250] * 6), **ident)
+        t = mon.tracks["738061"]
+        self.assertEqual(t.sched.direction, "DEP")
+        feed.local.discard("738061")
+        del feed.aircraft["738061"]
+        clock.t += 6000
+        out = path(48.35, 11.80, [80] * 6 + [114] * 30, [2750 + 300 * i for i in range(36)], gs=280)
+        fly(mon, feed, clock, "738061", out, **ident)
+        self.assertNotIn("TURNING_BACK", kinds(alerts))
+        self.assertIsNone(t.sched)
+        self.assertEqual(mon.classify(t)[0], "?")
+
+    def test_on_the_ground_before_a_gap_is_no_take_off(self):
+        """11 EARLY_DESCENTs on arrivals descending into their destinations "1-8 min after take-off", after
+        2 h of refused polls."""
+        mon, feed, clock, alerts = make(["--no-routes"])
+        ident = dict(flight="ELY5115", r="4X-EKB", t="B738", category="A3")
+        fly(mon, feed, clock, "738070", [dict(lat=32.0, lon=34.88, alt_baro="ground", gs=10, track=90)] * 3, **ident)
+        clock.t += 2 * 3600
+        fly(mon, feed, clock, "738070", path(41.5, 41.4, [90] * 30, [22800 - 200 * i for i in range(30)], gs=300),
+            **ident)
+        self.assertNotIn("EARLY_DESCENT", kinds(alerts))
+        self.assertEqual(mon.tracks["738070"].takeoff, 0)
+
+    def test_circuits_near_amman_with_no_route_are_not_holding(self):
+        """RJA017 (A321 JY-AYV): took off from Amman and circled east of it at 4,300 ft 2 h later."""
+        mon, feed, clock, alerts = make(["--no-routes"])
+        fly(mon, feed, clock, "740736", racetrack(10, start=(31.68, 36.20), alt=4300, gs=180), flight="RJA017",
+            r="JY-AYV", t="A321")
+        self.assertNotIn("HOLDING", kinds(alerts))
+
+    def test_military_trainer_alerts_once(self):
+        """CHLE1B (PC21, Jordan): 15 alerts in 31 min of aerobatics."""
+        mon, feed, clock, alerts = make(["--no-routes"])
+        ident = dict(flight="CHLE1B", r="1178", t="PC21", dbFlags=1)
+        for k in range(3):  # three dives 10 min apart (beyond the 5-min cooldown)
+            fly(mon, feed, clock, "743593", path(32.4, 36.0 + k / 10, [90] * 10, [16000] * 4 + [16000 - 2500 * i for i in
+                                                                                       range(1, 7)], gs=250), **ident)
+            fly(mon, feed, clock, "743593", path(32.4, 36.2, [270] * 50, [12000 + 80 * i for i in range(50)], gs=250),
+                **ident)
+        self.assertEqual(kinds(alerts), ["VERTICAL_RATE"])
+        self.assertIn("no further alerts on it", alerts[0]["message"])
+
