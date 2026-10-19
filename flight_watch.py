@@ -529,7 +529,8 @@ class StandingData:
                  ttl: float = 24 * 3600, clock=time.monotonic):
         self.http, self.source, self.ttl, self.clock = http, source.rstrip("/"), ttl, clock
         self.files: dict[str, tuple[float, dict]] = {}
-        self.fields: list | None = None  # every airport (lat, lon, ICAO), see airfield_near
+        self.fields: list | None = None  # every airport (lat, lon, ICAO), see all_fields
+        self.iata: dict = {}             # IATA -> the same tuple (airport_by_iata)
         self.preload = preload
         self.remote = self.source.startswith(("http://", "https://"))  # else a local checkout
         if http and self.source.startswith(("http://", "https://")):
@@ -629,8 +630,17 @@ class StandingData:
     def airfield_near(self, lat: float, lon: float) -> tuple[str, float] | None:
         """(ICAO, nm) of the nearest airport, from a local checkout only (all its airport files are
         read once, ~35,000 rows); None when the list is not at hand (a URL source, tests, replays)."""
-        if self.preload is not None or self.remote:
+        if not self.all_fields():
             return None
+        near = [(haversine_nm(lat, lon, la, lo), code) for la, lo, code in self.fields
+                if abs(la - lat) < 1 and abs(lo - lon) < 2]
+        d, code = min(near, default=(1e9, ""))
+        return code, d
+
+    def all_fields(self) -> list:
+        """Every airport of a local checkout as (lat, lon, ICAO), read once (~35,000 rows); [] without one."""
+        if self.preload is not None or self.remote:
+            return []
         if self.fields is None:
             self.fields = []
             for name in glob.glob(os.path.join(self.source, "airports", "schema-01", "*", "*.csv")):
@@ -641,14 +651,33 @@ class StandingData:
                                 self.fields.append((float(row[6]), float(row[7]), row[2] or row[0]))
                             except (ValueError, IndexError):
                                 continue
+                            if row[3]:
+                                self.iata.setdefault(row[3], self.fields[-1])
                 except OSError:
                     continue
-        if not self.fields:
+        return self.fields
+
+    def airport_by_iata(self, iata: str) -> tuple[str, float, float] | None:
+        """(ICAO, lat, lon) of the airport with this IATA code (the flight board's), from the airport files
+        already read or the local checkout's list; never fetches. IATA codes are unique in the list."""
+        if not re.fullmatch(r"[A-Z0-9]{3}", iata or ""):
             return None
-        near = [(haversine_nm(lat, lon, la, lo), code) for la, lo, code in self.fields
-                if abs(la - lat) < 1 and abs(lo - lon) < 2]
-        d, code = min(near, default=(1e9, ""))
-        return code, d
+        if self.preload is not None:
+            return next(((icao, pos[0], pos[1]) for icao, pos in self.preload.get("airports", {}).items()
+                         if len(pos) >= 3 and pos[2] == iata), None)
+        if iata not in self.iata:
+            for path, (_, rows) in list(self.files.items()):
+                if path.startswith("airports/"):
+                    for row in rows.values():
+                        if len(row) > 7 and row[3] == iata:
+                            try:
+                                self.iata[iata] = (float(row[6]), float(row[7]), row[2] or row[0])
+                            except ValueError:
+                                pass
+            if iata not in self.iata:
+                self.all_fields()
+        hit = self.iata.get(iata)
+        return (hit[2], hit[0], hit[1]) if hit else None
 
     def airport(self, icao: str) -> tuple[float, float] | None:
         if self.preload is not None:
@@ -748,6 +777,9 @@ class Track:
     flown_cs: str = ""       # a callsign whose flight to / from our airport it has completed (end_leg)
     feed: str = ""           # the provider of its newest report
     left_home: bool = False  # seen on the ground or low at our airport in this leg (a departure, not just by route)
+    orig_first: float = -1.0  # an arrival: nm from its origin when first heard in this leg (-1: not yet)
+    orig_max: float = 0.0     # the farthest it has been from its origin in this leg (at_own_origin)
+    orig_left: bool = False   # seen on the ground or climbing out within 30 nm of its origin in this leg
     sent: deque = field(default_factory=lambda: deque(maxlen=MAP_ALERTS))  # (kind, data time) of its alerts, for map links
 
     @property
@@ -1740,6 +1772,7 @@ class Monitor:
         if kind in ("DEP", "ARR") and (kind == "DEP") == (d > 15):
             t.flown_cs, t.sched = t.callsign, None  # (the board row, or the route data's direction)
         t.was_airborne, t.max_dist, t.route_dir, t.max_alt, t.left_home = False, 0.0, 0, 0, d < 15
+        t.orig_first, t.orig_max, t.orig_left = -1.0, 0.0, False
         if unseen:
             t.takeoff, t.leg_start = 0.0, t.last.t
 
@@ -1772,7 +1805,7 @@ class Monitor:
             t.flown_cs = ""
             t.left_home = t.left_home and bool(t.last) and not t.last.on_ground  # (same flight: LOT6ME -> LOT6212)
             t.sched, t.route_dir, t.was_airborne, t.max_dist, t.leg_start = None, 0, False, 0.0, now
-            t.max_alt = 0
+            t.max_alt, t.orig_first, t.orig_max, t.orig_left = 0, -1.0, 0.0, False
         t.callsign, t.cs_pending = new, None
 
     def check_track(self, t: Track, prev: Sample | None, ac: dict, spoofed: str, server_now: float) -> None:
@@ -1803,6 +1836,13 @@ class Monitor:
                          t.label(), (s.t - prev.t) / 60, moved)
                 self.end_leg(t, min(self.dist(prev), d), unseen=True)
         kind, route = self.classify(t)
+        if kind == "ARR":
+            orig = self.other_end(t, "ARR")
+            if orig:
+                od = haversine_nm(s.lat, s.lon, orig[1], orig[2])
+                t.orig_first = od if t.orig_first < 0 else t.orig_first
+                t.orig_max = max(t.orig_max, od)
+                t.orig_left = t.orig_left or od <= 30 and (s.on_ground or (s.alt or 0) < 10000 and (s.vrate or 0) > 300)
         if not t.followed and (kind in CONFIRMED or (kind == "DEP?" and d < 15 and airline_like(t))):
             t.followed = True
             t.follow_why = "airport"
@@ -2170,6 +2210,9 @@ class Monitor:
         apt, ad = nearest_airport(s.lat, s.lon)
         if ad <= a.terminal_radius + 5 and s.alt < 25000:
             return  # departure / arrival routing
+        if s.alt < 25000 and self.own_airport_near(t, s, a.terminal_radius + 5):
+            return  # the same at its own airport far away: 19 Oct 2026, ELY552 out of Sofia, ELY386 / ISR362
+            #         out of Rome, ELY318 out of Heathrow, SWR5MP into Zurich, WMT3PH into Milan
         if self.zones.expected(s.lat, s.lon, s.track):
             return  # route corner seen on many flights
         before = t.sample_ago(2 * a.turn_window)
@@ -2381,6 +2424,11 @@ class Monitor:
         if not (s.on_ground and t.was_airborne):
             return
         if kind == "ARR" and d > 15:
+            orig = self.at_own_origin(t, s)
+            if orig:
+                log.info("%s on the ground at its origin %s, never seen leaving it: its previous flight, "
+                         "not a diversion", t.label(), orig)
+                return
             place = self.landing_place(t, d)
             if place is not None:
                 self.alert(t, "DIVERSION", f"{self.args.airport} arrival on the ground "
@@ -2438,18 +2486,45 @@ class Monitor:
 
     def other_end(self, t: Track, kind: str) -> tuple[str, float, float] | None:
         """(ICAO, lat, lon) of the far end of our airport's flight - a departure's destination ("DEP"), an
-        arrival's origin ("ARR") - from the route data when it has our airport at the other end."""
+        arrival's origin ("ARR") - from the board, else the route data when it has our airport at the other
+        end. The route data is not used where it disagrees with the board: ELY5417 TLV -> TBS (board), listed
+        LLBG-LCLK, landed at Tbilisi and was a "departure bound for LCLK on the ground 671 nm from it" (19 Oct 2026)."""
+        if not self.standing:
+            return None
+        board = t.sched.other if t.sched and t.sched.direction == kind else ""
+        board = board if re.fullmatch(r"[A-Z0-9]{3}", board or "") else ""
         route = self.routes.get(t.callsign, (0, None))[1] if t.callsign != t.flown_cs else None
         parts = route.split("-") if route else []
         home = (self.args.airport, self.args.icao)
-        if len(parts) < 2 or not self.standing or (parts[0] if kind == "DEP" else parts[-1]) not in home:
-            return None
-        far = parts[-1] if kind == "DEP" else parts[0]
+        far = None
+        if len(parts) >= 2 and (parts[0] if kind == "DEP" else parts[-1]) in home:
+            far = parts[-1] if kind == "DEP" else parts[0]
         try:
-            pos = self.standing.airport(far)
+            pos = self.standing.airport(far) if far else None
+            if board and not (pos and (self.standing.airport_info(far) or ("",))[0] == board):
+                return self.standing.airport_by_iata(board)
         except requests.RequestException:
             return None
         return (far, *pos) if pos else None
+
+    def at_own_origin(self, t: Track, s: Sample) -> str | None:
+        """An arrival coming down at its own origin without having been seen leaving it (first heard over 60 nm
+        from it, never farther than that, never on the ground or climbing near it): its previous flight, already
+        under this one's callsign, not a diversion.
+        9A-BTH changed ISR193 -> ISR182 in the air and was the "MAD -> TLV arrival going silent at 2,000 ft,
+        probably landing elsewhere" on approach to Madrid (19 Oct 2026). A return flew away from it (QS1286 back
+        at Prague), climbed out of it (SWA512 back at Honolulu) or was first heard near it (LAN454, 46 nm from
+        Buenos Aires descending, its departure unseen)."""
+        orig = self.other_end(t, "ARR")
+        if (orig and t.orig_first > 60 and not t.orig_left and t.orig_max <= t.orig_first + 20
+                and haversine_nm(s.lat, s.lon, orig[1], orig[2]) <= DIVERTED_NM):
+            return orig[0]
+        return None
+
+    def own_airport_near(self, t: Track, s: Sample, nm: float) -> str | None:
+        """Its own origin or destination (board, route data) within `nm`, far from our airport too."""
+        ends = [e for e in (self.other_end(t, "ARR"), self.other_end(t, "DEP")) if e] + self.route_ends(t)
+        return next((e[0] for e in ends if haversine_nm(s.lat, s.lon, e[1], e[2]) <= nm), None)
 
     def check_destination(self, t: Track, kind: str, d: float) -> None:
         """Long before landing: an arrival flying away from the airport, or a departure flying back.
@@ -2698,6 +2773,12 @@ class Monitor:
                 if (t.followed and d > 30 and (s.vrate or 0) <= 0
                         and kind == "ARR" and silent >= 3 * a.lost_after):
                     t.lost = t.lost_alerted = True
+                    orig = self.at_own_origin(t, s)
+                    if orig:
+                        t.lost_alerted = False
+                        log.info("%s silent low near its origin %s, never seen leaving it: its previous flight "
+                                 "landing there, not a diversion", t.label(), orig)
+                        continue
                     fake = self.fake_place(t, s)
                     if fake:
                         t.lost_alerted = False
@@ -2742,7 +2823,11 @@ class Monitor:
                          t.label(), silent, s.lat, s.lon, fake)
                 continue
             if (s.alt or 0) < 12000 and descending and ad <= 30:
-                if kind == "ARR":  # a TLV arrival descending into another airport
+                orig = self.at_own_origin(t, s) if kind == "ARR" else None
+                if orig:
+                    log.info("%s silent %.0fs descending near its origin %s, never seen leaving it: its previous "
+                             "flight landing there, not a diversion", t.label(), silent, orig)
+                elif kind == "ARR":  # a TLV arrival descending into another airport
                     t.lost_alerted = True
                     self.alert(t, "DIVERSION", f"{a.airport} arrival went silent {silent:.0f}s, "
                                f"{where}, {ad:.0f} nm from {apt} - probably landing at {apt}")

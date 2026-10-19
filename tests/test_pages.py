@@ -331,6 +331,24 @@ class CorsWorker(unittest.TestCase):
                                         "https://adsb.lol/globe_history/2026/10/10/traces/6d/trace_full_04016d.json",
                                         "https://api.adsb.lol/v2/callsign/X429"])
 
+    def test_relays_ads_b_exchange_history_with_its_referer(self):
+        """adsb.lol refuses its trace files since 18 Oct 2026; ADS-B Exchange's history answers 403 without its
+        own Referer and sends no CORS header."""
+        got = self.run_worker("""
+            const P = "https://yuval-harpaz.github.io", seen = [], fetch0 = globalThis.fetch;
+            globalThis.fetch = async (u, o) => { seen.push([u, o.headers.Referer]); return fetch0(u, o); };
+            const out = [];
+            for (const path of ["/adsbx/globe_history/2026/10/19/traces/46/trace_full_739546.json",
+                                "/adsbx/globe_history/2026/10/19/traces/46/trace_full_739546.json",  // cached
+                                "/adsbx/globe_history/2026/10/19/acas/acas.csv.gz",   // not relayed
+                                "/adsbx/v2/hex/739546"])                              // nor this
+              out.push((await req(path, P)).slice(0, 2));
+            return {out, seen};""")
+        pages = "https://yuval-harpaz.github.io"
+        self.assertEqual(got["out"], [[200, pages], [200, pages], [404, pages], [404, pages]])
+        self.assertEqual(got["seen"], [["https://globe.adsbexchange.com/globe_history/2026/10/19/traces/46/"
+                                        "trace_full_739546.json", "https://globe.adsbexchange.com/"]])
+
     def test_cached_answer_and_a_recent_one_when_adsb_lol_says_429(self):
         got = self.run_worker("""
             const P = "https://yuval-harpaz.github.io", path = "/v2/callsign/CFG4308", out = [];
@@ -444,6 +462,7 @@ class FakeUpstream:
 
     def request(self, method, url, timeout=None, **kw):
         self.calls.append(url)
+        self.headers = kw.get("headers")
         r = requests.Response()
         r.status_code, r._content, r.url = self.status, b'{"ac": [], "now": 1}', url
         r.headers["Content-Type"] = "application/json"
@@ -485,6 +504,10 @@ class LocalHelper(unittest.TestCase):
         self.assertEqual(self.up.calls[-1], "https://adsb.lol/data/traces/71/trace_recent_738071.json")
         self.get("/globe_history/2026/10/10/traces/6d/trace_full_04016d.json")
         self.assertEqual(self.up.calls[-1], "https://adsb.lol/globe_history/2026/10/10/traces/6d/trace_full_04016d.json")
+        self.get("/adsbx/globe_history/2026/10/19/traces/46/trace_full_739546.json")
+        self.assertEqual(self.up.calls[-1],
+                         "https://globe.adsbexchange.com/globe_history/2026/10/19/traces/46/trace_full_739546.json")
+        self.assertEqual(self.up.headers, {"Referer": "https://globe.adsbexchange.com/"})
 
     def test_429_cools_down_instead_of_hammering(self):
         self.up.status = 429

@@ -412,6 +412,7 @@ def vrate_episodes(air: list[dict], rec: dict) -> list[dict]:
     probe = object.__new__(fw.Monitor)  # only the check: no feed, no notifier
     probe.args = fw.parse_args(["--no-routes"])
     probe.traces, probe.trace_left, probe.from_trace = {}, 0, False  # never reads the feed's trace
+    probe.standing = None  # (check_vrate asks it for airports far from the region: not here)
     hits = []
     probe.alert = lambda t, kind, msg, key=None, severity=0, **_: hits.append(
         {"i": i, "dir": key.split(":")[1], "rate": t.last.vrate,

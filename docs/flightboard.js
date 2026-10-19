@@ -275,6 +275,17 @@ FB.traceDay = async function (hex, day, raw) {
   if (raw) raw.push(d);
   return (d.trace || []).map(p => FB.tracePoint(d, p));
 };
+/** One UTC day ("YYYY-MM-DD") of an aircraft from ADS-B Exchange's history files, through the relay (they answer
+ *  403 without ADS-B Exchange's own Referer and send no CORS header; tools/cors_worker.js, tools/serve.py). Today's
+ *  file too. Since 18 Oct 2026 adsb.lol refuses its trace files (a browser check), so tracks come from here.
+ *  Throws when it cannot be read. */
+FB.traceDayADSBX = async function (hex, day, raw) {
+  if (!FB.local() && !FB.RELAY) throw new Error("ADS-B Exchange history: no relay");
+  const d = await FB.getJSON(FB.traceBase() + "/adsbx/globe_history/" + day.replace(/-/g, "/") + "/traces/" +
+                             hex.slice(-2) + "/trace_full_" + hex + ".json");
+  if (raw) raw.push(d);
+  return (d.trace || []).map(p => FB.tracePoint(d, p));
+};
 /** The flight an alert at time `t` belongs to: the leg around t (at most 30 min away from it), or null.
  *  tookOff / landed: that end of the leg is a real one (on the ground next to it, or under 200 kt, i.e.
  *  near a runway) and not just where coverage starts or stops. live: nothing came after it and it was

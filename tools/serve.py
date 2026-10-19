@@ -7,6 +7,8 @@ read it in the browser. Served from here the pages ask this server instead (same
   /v2/...           -> https://api.adsb.lol/v2/...        (callsign / hex lookups)
   /data/traces/...  -> https://adsb.lol/data/traces/...   (today's positions of one aircraft)
   /globe_history/.. -> https://adsb.lol/globe_history/... (its positions on a past day)
+  /adsbx/globe_history/.. -> https://globe.adsbexchange.com/globe_history/... (a day of one aircraft from
+                       ADS-B Exchange's history, with its own Referer: adsb.lol refuses its traces since 18 Oct 2026)
   /src/<file>       -> this checkout's Python files that flight_map.html's "analyse track" runs in the
                        browser (Pyodide; on GitHub Pages it reads them from raw.githubusercontent.com)
   anything else     -> the files in docs/ (flights.html, flight_map.html, ...)
@@ -36,7 +38,9 @@ import flight_watch as fw  # noqa: E402
 DOCS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs")
 UPSTREAM = {"/v2/": ("https://api.adsb.lol", 5),          # prefix -> (host, cache seconds)
             "/data/traces/": ("https://adsb.lol", 30),
-            "/globe_history/": ("https://adsb.lol", 3600)}   # one aircraft on a past day
+            "/globe_history/": ("https://adsb.lol", 3600),   # one aircraft on a past day
+            "/adsbx/globe_history/": ("https://globe.adsbexchange.com", 600)}  # (path without /adsbx)
+ADSBX_HEADERS = {"Referer": "https://globe.adsbexchange.com/"}  # its history files answer 403 without it
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 SOURCES = {"flight_watch.py", "tests/replay.py", "tools/capture_incident.py", "tools/track_alerts.py"}
 
@@ -59,7 +63,9 @@ class Relay:
             if hit and time.monotonic() - hit[0] < ttl:
                 return hit[1:]
             try:
-                r = self.http.request("GET", host + path, fw.HIGH, timeout=20)
+                adsbx = prefix.startswith("/adsbx/")
+                r = self.http.request("GET", host + (path[len("/adsbx"):] if adsbx else path), fw.HIGH, timeout=30,
+                                      headers=ADSBX_HEADERS if adsbx else None)
                 out = (200, r.content, r.headers.get("Content-Type", "application/json"))
             except fw.Throttled as e:  # cooling down after a 429: tell the page, don't hammer
                 return 429, json.dumps({"error": str(e)}).encode(), "application/json"

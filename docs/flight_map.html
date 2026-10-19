@@ -4,7 +4,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="https://unpkg.com/deck.gl@9.1.14/dist.min.js"></script>
 <script src="https://unpkg.com/@loaders.gl/terrain@4.2.1/dist/dist.min.js"></script>
-<script src="flightboard.js?v=adcd8b94"></script>  <!-- v = first 8 hex of its sha256: a changed file is never taken from the browser cache -->
+<script src="flightboard.js?v=44153c38"></script>  <!-- v = first 8 hex of its sha256: a changed file is never taken from the browser cache -->
 <style>
 html,body{margin:0;height:100%;font-family:sans-serif;color:#222;background:#fff}
 body{display:flex;flex-direction:column}
@@ -56,7 +56,8 @@ body{display:flex;flex-direction:column}
 <div class="credits">Map: Powered by <a href="https://www.esri.com">Esri</a> | Sources: Esri, HERE, Garmin, USGS, Intermap,
 INCREMENT P, NRCan, Esri Japan, METI, Esri China (Hong Kong), Esri Korea, Esri (Thailand), NGCC,
 © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, and the GIS User Community ·
-Flight data: <a href="https://adsb.lol">adsb.lol</a> (<a href="https://opendatacommons.org/licenses/odbl/">ODbL</a>) ·
+Flight data: <a href="https://adsb.lol">adsb.lol</a> (<a href="https://opendatacommons.org/licenses/odbl/">ODbL</a>)<span
+id="adsbxCredit" style="display:none">, <a href="https://www.adsbexchange.com">ADS-B Exchange</a></span> ·
 Alerts: flight-watch's monitor, from <a href="https://adsb.lol">adsb.lol</a> and <a href="https://adsb.fi">adsb.fi</a> ·
 Flights: Israel Airports Authority (<a href="https://data.gov.il/dataset/flydata">data.gov.il</a>) · Routes: Virtual Radar
 Server <a href="https://github.com/vradarserver/standing-data">standing data</a> ·
@@ -263,13 +264,28 @@ async function alertView() {
   clearInterval(timer);
   $("info").innerHTML = "looking for the flight of the alert…";
   let flight = null, failed = false;
-  const raw = [];
+  let raw = [];
+  const day = x => new Date(x * 1000).toISOString().slice(0, 10), note = e => (raw.errors = raw.errors || []).push(e.message);
   try {
     let pts = await FB.trace(hex, raw);
     if (!pts.length || t < pts[0].t)  // older than the trace reaches: that day's history file
-      pts = (await FB.traceDay(hex, new Date(t * 1000).toISOString().slice(0, 10), raw)).concat(pts).sort((a, b) => a.t - b.t);
+      pts = (await FB.traceDay(hex, day(t), raw)).concat(pts).sort((a, b) => a.t - b.t);
     flight = FB.flightAt(pts, t, now);
-  } catch (e) { failed = true; (raw.errors = raw.errors || []).push(e.message); }
+  } catch (e) { failed = true; note(e); }
+  if (!flight) {  // adsb.lol refused (403 since 18 Oct 2026) or had nothing: ADS-B Exchange's history of that day
+    const got = [], days = t % 86400 < 6 * 3600 ? [day(t - 86400), day(t)] : [day(t)];  // (a leg over midnight)
+    let pts = [];
+    for (const d of days)
+      try { pts = pts.concat(await FB.traceDayADSBX(hex, d, got)); } catch (e) { note(e); }
+    flight = pts.length ? FB.flightAt(pts.sort((a, b) => a.t - b.t), t, now) : null;
+    if (flight) {
+      got.errors = raw.errors;
+      raw = got;
+      raw.source = "ADS-B Exchange";
+      failed = false;
+      $("adsbxCredit").style.display = "";
+    }
+  }
   const live = flight ? flight.live : now - t < 1200;
   const pt = flight && flight.leg.reduce((a, p) => Math.abs(p.t - t) < Math.abs(a.t - t) ? p : a);
   const cs = flight ? FB.callsignAt(flight.leg, t) : "";  // what the aircraft sent (ENT368 on the board's ENT238)
@@ -288,7 +304,8 @@ async function alertView() {
   if (ANALYSIS.hex && ANALYSIS.hex !== hex) ANALYSIS = {state: "off"};
   cur = {f, ac: null, hex, cs, hexMode: true, trail: flight ? flight.leg : [], raw, traceDone: true, ends: [], ended: true, fromTrace: !!flight, fetched: now,
          msg: flight ? `${flight.landed ? "Landed" : "Last heard"} ${when(flight.end)}. The blue line is the flight of the alert ` +
-                       `(from ${when(flight.start)}); the orange dot is where it was at the alert, ${when(t)}.`
+                       `(from ${when(flight.start)}${raw.source ? ", " + raw.source + "'s history" : ""}); the orange dot is ` +
+                       `where it was at the alert, ${when(t)}.`
             : (raw.errors || []).some(m => /HTTP 403$/.test(m)) ? traceProblem(raw.errors)
             : failed ? `The track of the flight at ${when(t)} could not be loaded now. ADS-B Exchange shows it.`
             : `adsb.lol has no track of this aircraft around ${when(t)}. ADS-B Exchange may show it.`};

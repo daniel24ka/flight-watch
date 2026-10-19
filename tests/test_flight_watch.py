@@ -2058,3 +2058,92 @@ class SquawkCaseTests(unittest.TestCase):
             st["baro_rate"] = -230
         fly(mon, feed, clock, "4d225c", states, flight="RYR6789", r="9H-QDD", t="B738")
         self.assertNotIn("HOLDING", kinds(alerts))
+
+
+class FarEndTests(unittest.TestCase):
+    """False alarms at the far end of TLV flights (19 Oct 2026): the board's airport over the route data, an
+    arrival's previous flight landing at its origin under the arrival's callsign, turns out of / into it."""
+    AIRPORTS = {
+        "airports/schema-01/L/LC.csv": "Code,Name,ICAO,IATA,Location,CountryISO2,Latitude,Longitude,AltitudeFeet\n"
+                                       "LCLK,Larnaca,LCLK,LCA,Larnaca,CY,34.8751,33.6249,8\n",
+        "airports/schema-01/U/UG.csv": "Code,Name,ICAO,IATA,Location,CountryISO2,Latitude,Longitude,AltitudeFeet\n"
+                                       "UGTB,Tbilisi,UGTB,TBS,Tbilisi,GE,41.6692,44.9547,1624\n"
+                                       "UGSB,Batumi,UGSB,BUS,Batumi,GE,41.6103,41.5997,105\n",
+        "airports/schema-01/L/LE.csv": "Code,Name,ICAO,IATA,Location,CountryISO2,Latitude,Longitude,AltitudeFeet\n"
+                                       "LEMD,Madrid,LEMD,MAD,Madrid,ES,40.4719,-3.5626,1998\n",
+        "airports/schema-01/L/LB.csv": "Code,Name,ICAO,IATA,Location,CountryISO2,Latitude,Longitude,AltitudeFeet\n"
+                                       "LBSF,Sofia,LBSF,SOF,Sofia,BG,42.6967,23.4114,1742\n",
+    }
+
+    def setup(self, rows):
+        mon, feed, clock, alerts = make(["--rate", "600", "--rate-max", "6000"], with_schedule=True)
+        feed.files = {**ROUTE_FILES, **self.AIRPORTS, "routes/schema-01/E/ELY-5.csv":
+                      "Callsign,Code,Number,AirlineCode,AirportCodes\nELY5417,ELY,5417,ELY,LLBG-LCLK\n"}
+        mon.schedule.load(rows, datetime.fromtimestamp(clock(), mon.schedule.tz))
+        for icao in ("UGTB", "LEMD", "LBSF"):  # (a local checkout has them all: StandingData.all_fields)
+            mon.standing.airport(icao)
+            clock.t += 10
+        feed.local = {"999999"}
+        feed.aircraft["999999"] = airborne(32.5, 34.5, 10000, flight="LOC1")
+        return mon, feed, clock, alerts
+
+    def test_board_destination_over_the_route_data(self):
+        """ELY5417 TLV -> TBS (board), listed LLBG-LCLK: landed at Tbilisi, "bound for LCLK, 671 nm from it"."""
+        mon, feed, clock, alerts = self.setup([board_row("LY", "5417", "D", local_time(Clock(), 0), "TBS")])
+        ident = dict(flight="ELY5417", r="LY-LOC", t="B738")
+        tlv = (32.0114, 34.8867)
+        fly(mon, feed, clock, "503cc0", [dict(lat=tlv[0], lon=tlv[1], alt_baro="ground", gs=5, track=270)] * 3,
+            **ident)
+        fly(mon, feed, clock, "503cc0", path(*tlv, [10] * 6, [1500 + 800 * i for i in range(6)], gs=180), **ident)
+        self.assertEqual(mon.other_end(mon.tracks["503cc0"], "DEP")[0], "UGTB")
+        clock.t += 3 * 3600
+        fly(mon, feed, clock, "503cc0", path(41.75, 44.70, [110] * 6, [3000 - 400 * i for i in range(6)], gs=150),
+            local=False, **ident)
+        fly(mon, feed, clock, "503cc0", [dict(lat=41.6692, lon=44.9547, alt_baro="ground", gs=12, track=120)] * 4,
+            local=False, **ident)
+        self.assertNotIn("DIVERSION", kinds(alerts, "503cc0"))
+
+    def arrival_at_madrid(self, leaves):
+        """An aircraft flying the 6H182 MAD -> TLV callsign coming down at Madrid; `leaves`: first seen
+        departing Madrid, flying out 80 nm and back."""
+        mon, feed, clock, alerts = self.setup([board_row("6H", "182", "A", local_time(Clock(), 5), "MAD")])
+        ident = dict(flight="ISR182", r="9A-BTH", t="A320")
+        if leaves:
+            fly(mon, feed, clock, "501d0a", [dict(lat=40.4719, lon=-3.5626, alt_baro="ground", gs=5, track=90)] * 3,
+                local=False, **ident)
+            fly(mon, feed, clock, "501d0a", path(40.4719, -3.5626, [90] * 70, [2000 + 300 * i for i in range(70)],
+                                                 gs=250), local=False, **ident)
+            start = mon.tracks["501d0a"].last
+            clock.t += 600
+            lat, lon = start.lat, start.lon
+        else:
+            lat, lon = 40.45, -1.40  # first heard 100 nm out (60 nm or less: its departure may have gone unseen)
+        top, rate = (14000, 200) if leaves else (30000, 220)  # 1,500 ft about 5 nm before Madrid
+        approach = [st for st in path(lat, lon, [270] * 250, [max(top - rate * i, 1500) for i in range(250)],
+                                      gs=250) if st["lon"] > -3.45]
+        fly(mon, feed, clock, "501d0a", approach, local=False, **ident)
+        del feed.aircraft["501d0a"]
+        for _ in range(60):
+            step(mon, clock)
+        return kinds(alerts, "501d0a")
+
+    def test_previous_flight_landing_at_the_arrivals_origin(self):
+        """9A-BTH changed ISR193 -> ISR182 in the air and went silent on approach to Madrid: "TLV arrival
+        went silent descending through 2000 ft ... probably landing elsewhere" (19 Oct 2026)."""
+        self.assertNotIn("DIVERSION", self.arrival_at_madrid(leaves=False))
+
+    def test_return_to_the_arrivals_origin_is_still_a_diversion(self):
+        """QS1286 PRG -> TLV (7700) went back to Prague."""
+        self.assertIn("DIVERSION", self.arrival_at_madrid(leaves=True))
+
+    def test_turn_climbing_out_of_its_origin_far_away(self):
+        """ELY552 SOF -> TLV, 19 Oct 2026: "track 359 -> 126 deg" at 17,825 ft, 10 nm from Sofia."""
+        tracks = [0] * 6 + [7.5 * i for i in range(1, 17)] + [126] * 16
+        alts = [12000 + 150 * i for i in range(len(tracks))]
+        got = {}
+        for other in ("SOF", "VIE"):
+            mon, feed, clock, alerts = self.setup([board_row("LY", "552", "A", local_time(Clock(), 3), other)])
+            fly(mon, feed, clock, "738057", path(42.45, 23.65, tracks, alts), local=False, flight="ELY552",
+                r="4X-EHI", t="B739")
+            got[other] = "COURSE_CHANGE" in kinds(alerts)
+        self.assertEqual(got, {"SOF": False, "VIE": True})

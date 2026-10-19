@@ -7,6 +7,11 @@
  *   /v2/callsign/<cs>[,<cs>...]       -> https://api.adsb.lol/v2/...    (fresh 5 s)
  *   /data/traces/<xx>/trace_{full,recent}_<hex>.json -> https://adsb.lol/data/traces/... (30 s)
  *   /globe_history/<yyyy>/<mm>/<dd>/traces/<xx>/trace_full_<hex>.json -> https://adsb.lol/... (1 h; a past day)
+ *   /adsbx/globe_history/<yyyy>/<mm>/<dd>/traces/<xx>/trace_full_<hex>.json
+ *                                     -> https://globe.adsbexchange.com/globe_history/... (10 min; a UTC day of one
+ *                                        aircraft, today's too). Its history files answer 403 without ADS-B Exchange's
+ *                                        own Referer and send no CORS header. Since 18 Oct 2026 adsb.lol refuses its
+ *                                        trace files (a browser check), so the map's tracks come from here.
  *   /hexof/<cs>[,<cs>...]             -> which aircraft (hex) flew each callsign in the last 36 h
  *
  * Nothing else is relayed (not an open proxy), only GET, only for the origins below. Answers are
@@ -33,15 +38,17 @@
  */
 // Cron Trigger expression: */5 * * * *
 const ORIGINS = [/^https:\/\/yuval-harpaz\.github\.io$/, /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/];
-const ROUTES = [  // [path pattern, upstream host, fresh seconds]
+const ROUTES = [  // [path pattern, upstream host, fresh seconds, prefix left out upstream, request headers]
   [/^\/v2\/(hex|callsign)\/[0-9A-Za-z~,]{1,1000}$/, "https://api.adsb.lol", 5],
   [/^\/data\/traces\/[0-9a-f]{2}\/trace_(full|recent)_~?[0-9a-f]{6}\.json$/, "https://adsb.lol", 30],
   [/^\/globe_history\/\d{4}\/\d\d\/\d\d\/traces\/[0-9a-f]{2}\/trace_full_~?[0-9a-f]{6}\.json$/, "https://adsb.lol", 3600],
+  [/^\/adsbx\/globe_history\/\d{4}\/\d\d\/\d\d\/traces\/[0-9a-f]{2}\/trace_full_~?[0-9a-f]{6}\.json$/,
+   "https://globe.adsbexchange.com", 600, "/adsbx", {"Referer": "https://globe.adsbexchange.com/"}],
 ];
 const STALE_S = 120;              // serve an answer this old when upstream fails
 const HOME = [32.0114, 34.8867];  // TLV
 const KEEP_S = 36 * 3600;         // callsign map: forget entries older than this
-const VERSION = "0.5";            // shown at / and /status, to check which code is deployed
+const VERSION = "0.6";            // shown at / and /status, to check which code is deployed
 const UA = {"User-Agent": "flight-watch-pages-relay/" + VERSION};
 
 function cors(origin) {
@@ -132,9 +139,10 @@ export default {
 
     const route = ROUTES.find(([re]) => re.test(url.pathname));
     if (!route) return json(404, {error: "not relayed"});
-    const [, host, fresh] = route;
+    const [, host, fresh, strip, headers] = route;
+    const upstream = host + (strip ? url.pathname.slice(strip.length) : url.pathname);
     const cache = typeof caches !== "undefined" ? caches.default : null;
-    const key = new Request(host + url.pathname);
+    const key = new Request(upstream);
     const hit = cache && await cache.match(key);
     const age = hit ? Date.now() / 1000 - +(hit.headers.get("X-Fetched") || 0) : Infinity;
     const send = (r, extra) => {
@@ -145,7 +153,7 @@ export default {
     if (hit && age < fresh) return send(hit);
     let up;
     try {
-      up = await fetch(host + url.pathname, {headers: UA, redirect: "follow"});
+      up = await fetch(upstream, {headers: {...UA, ...headers}, redirect: "follow"});
     } catch (e) {
       up = null;
     }

@@ -84,7 +84,11 @@ because adsb.lol's coverage is thinner than ADS-B Exchange's (ET-AWJ, 10 Oct 202
 day; adsb.lol heard 2 min of the Amman departure, then nothing for 7 h, and `FB.legs` joins that gap). Without
 a trace: live for 20 min after the alert, then the replay. A replay shows one UTC day. With no track of ours to draw,
 ADS-B Exchange's replay is put in view (beside ours on a wide screen, alone on a phone; the viewer's remembered choice is
-kept): since 18 Oct 2026 adsb.lol answers its trace files with a browser check (403), also through the worker.
+kept): since 18 Oct 2026 adsb.lol answers its trace files with a browser check (403), also through the worker. So when adsb.lol
+gives no flight the page reads ADS-B Exchange's history file of that UTC day (today's too; and the day before for a leg over
+midnight) through the relay's `/adsbx/globe_history/...` (`FB.traceDayADSBX`; worker 0.6, `tools/serve.py`): it answers 403
+without ADS-B Exchange's own Referer and sends no CORS header. The owner chose this (19 Oct 2026) knowing ADS-B Exchange sells
+its data and may block it; credited on the page when used.
 
 **Flight pages** (`docs/flights.html`, `docs/flight_map.html`, shared `docs/flightboard.js`;
 local helper `tools/serve.py`): the board table and a live map of one flight, processed in the
@@ -231,6 +235,12 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   back"). `Monitor.end_leg`: a departure landing away from TLV, or an arrival at it, has flown that callsign
   (`Track.flown_cs`): neither the board row nor the route data's direction applies to it again until the
   callsign changes.
+  The far end comes from the board's airport first (`Monitor.other_end`, IATA -> ICAO by `StandingData.airport_by_iata`), the
+  route data only where it agrees: ELY5417 TLV -> TBS, listed LLBG-LCLK, landed at Tbilisi as "bound for LCLK" (19 Oct 2026).
+  An arrival coming down at its own origin is its previous flight, not a DIVERSION, when it was first heard > 60 nm from it, never
+  farther, and never on the ground or climbing near it (`at_own_origin`; 9A-BTH changed ISR193 -> ISR182 in the air and "went
+  silent probably landing elsewhere" on approach to Madrid, 19 Oct 2026). Squawk replay: the real returns (SWA512 to Honolulu,
+  LAN454 to Buenos Aires, first heard 46 nm out with its departure unseen) still alert.
   A landing elsewhere must be believable (13 Oct 2026; all 4 DIVERSIONs of the run of 11-12 Oct were
   arrivals on approach to TLV with spoofed GPS - ETD3QF, AIZ282, ISR972, ELY5462): "on the ground" within
   `LANDING_AIRPORT_NM` (5) of an airport of the local `standing-data/` checkout (`StandingData.airfield_near`;
@@ -306,6 +316,8 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   (circling). Circling is never a reversal, also when hot. OFF_COURSE / TURNING_BACK wait while a
   turn is pending and skip circling (the outbound half of an orbit flies away from TLV), unless hot.
   Cost: a real reversal on a flight that has not alerted yet is reported ~2 min later.
+  Nor below FL250 within 35 nm of the flight's own origin / destination far away (`own_airport_near`: board, route data;
+  19 Oct 2026: ELY552 out of Sofia, ELY386 / ISR362 out of Rome, ELY318 out of Heathrow, SWR5MP into Zurich, WMT3PH into Milan).
   Not reported either when the held new track points at the route's destination (`turned_to_destination`,
   `--toward-dest-tol`; MEA312 Beirut - Amman, 16 Oct 2026: east past Damascus, then 186 deg with Amman at 193).
   Not after the flight was seen flying its route backwards (`route_dir` -1); a route stored the wrong way round
