@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import requests
@@ -66,6 +66,7 @@ class FakeFeed:
         self.headers = {}
         self.learned = []         # (json body, Authorization header) of POSTs to the relay's /learn
         self.traces = {}          # hex -> rows of its recent trace, absolute times (see trace_rows)
+        self.bsky = []            # AeroSignals' posts (Bluesky getAuthorFeed "feed" items)
 
     def ac(self, hexid):
         a = dict(self.aircraft[hexid], hex=hexid)
@@ -101,6 +102,8 @@ class FakeFeed:
                 return FakeResponse(404, url=url)
             return FakeResponse(200, {"icao": hexid, "timestamp": rows[0][0],
                                       "trace": [[r[0] - rows[0][0], *r[1:]] for r in rows]}, url=url)
+        if path.endswith("/app.bsky.feed.getAuthorFeed"):
+            return FakeResponse(200, {"feed": self.bsky}, url=url)
         if path == "/learn" and method == "POST":
             self.learned.append((kw.get("json"), (kw.get("headers") or {}).get("Authorization")))
             return FakeResponse(200, {"stored": len(kw.get("json") or {})})
@@ -116,6 +119,7 @@ def make(argv=(), with_schedule=False):
     clock = Clock()
     args = fw.parse_args(["--jsonl", "", "--no-schedule", "--turn-zones", "", "--fallback-provider", "",
                           "--remote-providers", "adsb.lol",  # one feed unless a test asks for more
+                          "--aerosignals-interval", "0",  # Bluesky: AeroSignalsTests switch it on
                           "--standing-data", fw.STANDING_DATA, *argv])  # the fake feed, never a local copy
     http = fw.Http(min_gap=0, rate=args.rate, rate_max=args.rate_max, clock=clock, rng=lambda: 0.5)
     feed = FakeFeed(clock)
@@ -2147,3 +2151,72 @@ class FarEndTests(unittest.TestCase):
                 r="4X-EHI", t="B739")
             got[other] = "COURSE_CHANGE" in kinds(alerts)
         self.assertEqual(got, {"SOF": False, "VIE": True})
+
+
+def aero_post(clock, text, n=1, minutes_ago=3):
+    created = datetime.fromtimestamp(clock() - 60 * minutes_ago, timezone.utc)
+    return {"post": {"uri": f"at://did:plc:x/app.bsky.feed.post/3sq{n}", "author": {"handle": "spotterintel.bsky.social"},
+                     "record": {"text": text, "createdAt": created.strftime("%Y-%m-%dT%H:%M:%S.000Z")}}}
+
+
+OS82 = ("Emergency reported for Austrian flight.\nAustrian Airlines OS82 | A320\nTel-aviv (TLV) \u2192 Vienna (VIE)\n\n"
+        "Squawked 7700. Monitoring.")
+
+
+class AeroSignalsTests(unittest.TestCase):
+    """A second source of emergency squawks: AeroSignals' posts on Bluesky (OS82, 18 Oct 2026: 7700 over Bulgaria
+    while adsb.lol refused nearly every poll; nothing alerted)."""
+
+    def setup(self):
+        mon, feed, clock, alerts = make(["--aerosignals-interval", "120", "--rate", "600", "--rate-max", "6000"])
+        posts = []
+        mon.notifier.send_post = posts.append
+        feed.local = {"999999"}
+        feed.aircraft["999999"] = airborne(32.5, 34.5, 10000, flight="LOC1")
+        return mon, feed, clock, alerts, posts
+
+    def test_parses_the_template(self):
+        c = fw.aero_case(OS82)
+        self.assertEqual((c["squawk"], c["iata"], c["number"], c["from"], c["to"]), ("7700", "OS", "82", "TLV", "VIE"))
+        self.assertIsNone(fw.aero_case("Update: Austrian Airlines OS82 has landed safely."))
+
+    def test_squawk_our_polls_missed_is_alerted_once_on_its_aircraft(self):
+        mon, feed, clock, alerts, posts = self.setup()
+        feed.bsky = [aero_post(clock, OS82)]
+        fly(mon, feed, clock, "440604", path(43.8, 24.9, [270] * 30, [37000] * 30), local=False, flight="AUA82",
+            r="OE-LZE", t="A320")  # squawk 1000 in our reports: the 7700 fell between them
+        hits = [a for a in alerts if a["kind"] == "EMERGENCY"]
+        self.assertEqual(len(hits), 1, kinds(alerts))
+        self.assertIn("reported by AeroSignals", hits[0]["message"])
+        self.assertIn("bsky.app/profile/spotterintel.bsky.social/post/3sq1", hits[0]["message"])
+        self.assertEqual(hits[0]["hex"], "440604")
+        self.assertEqual(posts, [])
+
+    def test_squawk_we_alerted_ourselves_is_not_repeated(self):
+        mon, feed, clock, alerts, posts = self.setup()
+        fly(mon, feed, clock, "440604", path(43.8, 24.9, [270] * 3, [37000] * 3, squawk="7700"), local=False,
+            flight="AUA82", r="OE-LZE", t="A320")
+        clock.t += 60  # (the post a few minutes later)
+        feed.bsky = [aero_post(clock, OS82, minutes_ago=0)]
+        fly(mon, feed, clock, "440604", path(43.8, 24.6, [270] * 20, [37000] * 20, squawk="7700"), local=False,
+            flight="AUA82", r="OE-LZE", t="A320")
+        self.assertEqual(kinds(alerts).count("EMERGENCY"), 1)
+        self.assertNotIn("AeroSignals", " ".join(a["message"] for a in alerts))
+
+    def test_aircraft_not_in_our_feeds_is_announced_as_the_post(self):
+        mon, feed, clock, alerts, posts = self.setup()
+        feed.bsky = [aero_post(clock, OS82)]
+        for _ in range(80):  # 13 min
+            step(mon, clock)
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(posts[0]["flight"], "OS82")
+        self.assertNotIn("EMERGENCY", kinds(alerts))
+
+    def test_other_flights_and_old_posts_are_left_out(self):
+        mon, feed, clock, alerts, posts = self.setup()
+        other = OS82.replace("Tel-aviv (TLV)", "Dubai (DXB)")
+        feed.bsky = [aero_post(clock, other, n=1), aero_post(clock, OS82, n=2, minutes_ago=4 * 60)]
+        for _ in range(80):
+            step(mon, clock)
+        self.assertEqual((posts, kinds(alerts)), ([], []))
+        self.assertEqual(mon.aero_pending, {})

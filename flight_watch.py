@@ -203,6 +203,14 @@ SKYDIVE_QUIET_S = 3 * 3600
 # Telegram gets one GPS_SPOOFING start in this long (s) and no GPS_DEGRADED (--telegram-skip): on
 # 16 Oct 2026 a NIC-0 episode near Amman went out twice (start, end) with nothing to see on the map
 TG_SPOOF_S = 6 * 3600
+# AeroSignals (Bluesky bot spotterintel.bsky.social, since 11 Apr 2026) posts each 7700 / 7600 / 7500 a few minutes
+# after it starts; read as a second source so a squawk our polls missed is not lost (OS82 TLV -> VIE squawked 7700
+# on 18 Oct 2026 while adsb.lol refused nearly every poll; nothing alerted). Posts of a flight to / from Israel.
+AEROSIGNALS = "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed"
+AEROSIGNALS_ACTOR = "spotterintel.bsky.social"
+AERO_MAX_AGE_S = 3 * 3600  # older posts (after a restart or an outage) are not announced
+AERO_FIND_S = 600          # look this long for the aircraft in the feeds, then announce the post without it
+ISRAEL_IATA = {"TLV", "HFA", "ETM", "VDA", "SDV", "EIL"}
 # common jump aircraft (ICAO type -> model, for the alert text)
 JUMP_PLANES = {
     "P750": "PAC 750XL", "C208": "Cessna 208 Caravan", "PC6P": "Pilatus PC-6 Porter",
@@ -374,6 +382,39 @@ def iata_flight(callsign: str) -> str | None:
     """Callsign -> IATA flight number where the airline is known, e.g. FDB1073 -> FZ1073."""
     m = re.fullmatch(r"([A-Z]{3})0*(\d{1,4})", callsign or "")
     return ICAO_TO_IATA[m.group(1)] + m.group(2) if m and m.group(1) in ICAO_TO_IATA else None
+
+
+def aero_case(text: str) -> dict | None:
+    """An AeroSignals squawk post's fields, or None for its other posts (outcomes, deliveries, news):
+
+        Austrian Airlines flight squawks 7700.          (headline: varies)
+        Austrian Airlines OS82 | A320
+        Tel-aviv (TLV) → Vienna (VIE)
+        Squawked 7700. Monitoring.
+    (tools/squawk_cases.py parses the same template.)"""
+    m = re.search(r"Squawked (7[567]00)", text or "")
+    if not m:
+        return None
+    code = lambda x: (re.search(r"\(([A-Z0-9]{3})\)", x) or [None, None])[1]  # noqa: E731
+    c = {"squawk": m.group(1)}
+    for line in (x.strip() for x in text.splitlines()[1:] if x.strip()):
+        if "|" in line and "airline" not in c:
+            who, c["type_name"] = (x.strip() for x in line.split("|", 1))
+            fm = re.search(r"\s([A-Z0-9]{2})\s?(\d{1,4}[A-Z]?)$", who)
+            if fm:
+                c["airline"], c["iata"], c["number"] = who[:fm.start()].strip(), fm.group(1), fm.group(2)
+            else:
+                c["airline"] = who
+        elif "→" in line:
+            a, b = line.split("→", 1)
+            c.update({"from": code(a), "to": code(b), "from_name": a.strip(), "to_name": b.strip()})
+    return c
+
+
+def same_flight(flight: str, iata: str, number: str) -> bool:
+    """Board flight "LY2" / "LY002" is iata "LY" + number "002"?"""
+    m = re.fullmatch(r"([A-Z0-9]{2})0*(\d+[A-Z]?)", flight or "")
+    return bool(m) and m.group(1) == iata and m.group(2) == number.lstrip("0")
 
 
 def map_alerts(alerts, t: float) -> str:
@@ -1262,6 +1303,30 @@ class Notifier:
                 with open(self.args.telegram_posts, "a", encoding="utf-8") as f:
                     f.write(json.dumps(post, ensure_ascii=False) + "\n")
 
+    def send_post(self, c: dict) -> None:
+        """An AeroSignals squawk post whose aircraft is not in our feeds (Monitor.aero_alerts): the log, the
+        console and Telegram, with the post and FR24's page of the flight. Not in --jsonl (no position)."""
+        when = datetime.fromtimestamp(c["t"], ZoneInfo("Asia/Jerusalem")).strftime("%H:%M")
+        text = (f"\U0001f198 Squawk {c['squawk']} ({EMERGENCY_SQUAWKS[c['squawk']].lower()}) reported by AeroSignals: "
+                f"{c.get('airline', '')} {c.get('flight', '')} ({c.get('type_name', '?')}) {c.get('from_name', '?')} \u2192 "
+                f"{c.get('to_name', '?')}, {when} Israel time. Not in our feeds (yet).\n")
+        segments = [{"text": text}, {"link": "AeroSignals post", "url": c["url"]}]
+        if c.get("flight"):
+            segments += [{"text": " \u00b7 "}, {"link": "FR24 flight",
+                                                  "url": f"https://www.flightradar24.com/data/flights/{c['flight'].lower()}"}]
+        log.info("[EMERGENCY] (AeroSignals) %s| %s", text.strip(), c["url"])
+        self.console(text.strip())
+        if self.tg_token and self.tg_chat:
+            sent = self._post(f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
+                              json={"chat_id": self.tg_chat, "text": self.telegram_text(segments),
+                                    "parse_mode": "HTML", "disable_web_page_preview": True})
+            if self.args.telegram_posts:
+                post = {"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(c["t"])), "kind": "EMERGENCY",
+                        "priority": 5, "hex": None, "sent": sent, "segments": segments,
+                        "text": "".join(x.get("text") or x["link"] for x in segments)}
+                with open(self.args.telegram_posts, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(post, ensure_ascii=False) + "\n")
+
     def telegram_wanted(self, rec: dict) -> bool:
         """--telegram-skip kinds are left out, unless the flight also did something not skipped
         ("[also: ...]": lost contact after a dive is sent, lost contact + position jump is not)."""
@@ -1312,6 +1377,9 @@ class Monitor:
         self.wall = time.time
         self.tracks: dict[str, Track] = {}
         self.rides = self.past_rides()
+        self.aero_at = -1e12             # wall time AeroSignals' posts were last read
+        self.aero_pending: dict = {}     # post uri -> its squawk case, while we look for the aircraft
+        self.aero_seen = self.past_aero()  # post ids already announced, or post uris read
         self.routes: dict[str, tuple[float, str | None]] = {}
         self.route_failures = 0
         self.routes_off = args.no_routes
@@ -1694,6 +1762,7 @@ class Monitor:
         # Remote layers may ask several networks: coverage differs a lot outside Israel.
         batches += self.follow(local_hexes, local)
         batches += self.discover(local)
+        batches += self.aerosignals(local)  # a squawk reported on Bluesky: its aircraft
 
         # merge (same aircraft may come from several queries) and update tracks
         latest: dict[str, tuple] = {}
@@ -1740,6 +1809,7 @@ class Monitor:
 
         for t, prev, ac, spoofed in updated:
             self.check_track(t, prev, ac, spoofed, server_now)
+        self.aero_alerts()
 
         # Don't declare mass "lost contact" after a feed glitch; after our own outage, see check_lost.
         feed_ok = not (self.last_count > 10 and len(local) < 0.5 * self.last_count)
@@ -2310,6 +2380,124 @@ class Monitor:
         except (OSError, TypeError):
             pass  # no file yet, or --jsonl ''
         return out
+
+    def past_aero(self) -> set:
+        """Ids of the AeroSignals posts already announced in --jsonl / --telegram-posts (a restart does not repeat
+        them), and the callsigns already alerted EMERGENCY there (as "cs:<callsign>")."""
+        out = set()
+        for name in (self.args.jsonl, getattr(self.args, "telegram_posts", "")):
+            try:
+                with open(name, encoding="utf-8") as f:
+                    for line in f:
+                        out.update(re.findall(r"spotterintel\.bsky\.social/post/([a-z0-9]+)", line))
+                        if '"kind": "EMERGENCY"' in line:
+                            try:
+                                out.add("cs:" + (json.loads(line).get("callsign") or ""))
+                            except ValueError:
+                                pass
+            except (OSError, TypeError):
+                pass
+        return out
+
+    def aerosignals(self, local: list) -> list:
+        """Read AeroSignals' posts every --aerosignals-interval (LOW priority, another host); a squawk of a flight
+        to / from Israel is looked for in the remote feeds by its callsigns. Returns their answers, to be
+        merged with the poll's (the aircraft then gets a track, is followed, and aero_alerts announces it)."""
+        a = self.args
+        if a.aerosignals_interval <= 0:
+            return []
+        now = self.wall()
+        if now - self.aero_at >= a.aerosignals_interval:
+            self.aero_at = now
+            self.read_aerosignals(now)
+        batches = []
+        for c in self.aero_pending.values():
+            if self.aero_track(c) is None and c["callsigns"] and now - c.get("asked", -1e12) >= 60:
+                c["asked"] = now
+                for prov in a.remote_providers:
+                    batches += self.remote_query(prov, "callsign", c["callsigns"], local, 1)[0]
+        return batches
+
+    def read_aerosignals(self, now: float) -> None:
+        q = urlencode({"actor": AEROSIGNALS_ACTOR, "limit": 30, "filter": "posts_no_replies"})
+        try:
+            data = self.http.get_json(f"{AEROSIGNALS}?{q}", LOW)
+        except (requests.RequestException, ValueError) as e:  # Throttled included
+            log.warning("AeroSignals (Bluesky) not read: %s", e)
+            return
+        for item in data.get("feed") or []:
+            post = item.get("post") or {}
+            uri, rec = post.get("uri") or "", post.get("record") or {}
+            pid = uri.rsplit("/", 1)[-1]
+            if not uri or uri in self.aero_seen or pid in self.aero_seen or rec.get("reply"):
+                continue
+            self.aero_seen.add(uri)
+            c = aero_case(rec.get("text", ""))
+            if not c:
+                continue
+            try:
+                c["t"] = datetime.fromisoformat(rec["createdAt"].replace("Z", "+00:00")).timestamp()
+            except (KeyError, ValueError):
+                continue
+            if now - c["t"] > AERO_MAX_AGE_S:
+                continue
+            if not {c.get("from"), c.get("to")} & ISRAEL_IATA:
+                log.debug("AeroSignals: squawk %s of %s%s %s -> %s, not ours", c["squawk"], c.get("iata", ""),
+                          c.get("number", ""), c.get("from"), c.get("to"))
+                continue
+            c.update(uri=uri, pid=pid, url=f"https://bsky.app/profile/{AEROSIGNALS_ACTOR}/post/{pid}",
+                     callsigns=self.aero_callsigns(c), flight=c.get("iata", "") + c.get("number", ""))
+            log.info("AeroSignals: squawk %s on %s %s -> %s (%s) - looking for it: %s", c["squawk"],
+                     c["flight"] or c.get("airline"), c.get("from"), c.get("to"), c["url"], ",".join(c["callsigns"]))
+            self.aero_pending[uri] = c
+
+    def aero_callsigns(self, c: dict) -> list[str]:
+        """Callsigns a squawk post's flight may send: the board's for that flight, else airline ICAO + number."""
+        iata, num = c.get("iata"), c.get("number") or ""
+        if not (iata and num):
+            return []
+        out = []
+        for f in (self.schedule.flights if self.schedule else []):
+            if same_flight(f.flight, iata, num):
+                out += list(f.callsigns) + list(f.alt_callsigns)
+        try:
+            icao = AIRLINE_ICAO.get(iata) or self.resolve_airline(iata)
+        except requests.RequestException:
+            icao = None
+        if icao:
+            n = num.lstrip("0") or "0"
+            out += [icao + n] + ([f"{icao}{int(n):03d}"] if n.isdigit() and len(n) < 3 else [])
+        return list(dict.fromkeys(out))
+
+    def aero_track(self, c: dict) -> Track | None:
+        """The aircraft of a squawk post among our tracks (by callsign, or the board flight), heard near its time."""
+        hits = [t for t in self.tracks.values() if t.last and abs(t.last_msg - c["t"]) <= AERO_MAX_AGE_S
+                and (t.callsign in c["callsigns"] or (t.sched and c.get("iata") and same_flight(
+                    t.sched.flight, c["iata"], c.get("number") or "")))]
+        return max(hits, key=lambda t: t.last_msg, default=None)
+
+    def aero_alerts(self) -> None:
+        """Announce each pending AeroSignals squawk once: as EMERGENCY on its aircraft when we have it (unless
+        the monitor alerted its emergency already), else after AERO_FIND_S as the post alone."""
+        for uri, c in list(self.aero_pending.items()):
+            t = self.aero_track(c)
+            sq = c["squawk"]
+            told = ("cs:" + t.callsign in self.aero_seen) if t else any("cs:" + x in self.aero_seen for x in c["callsigns"])
+            if t and any(k.startswith("EMERGENCY") and abs(at - c["t"]) <= AERO_MAX_AGE_S
+                         for k, (at, _) in t.alerted.items()) or told:
+                log.info("AeroSignals: squawk %s on %s - our own EMERGENCY alert was sent already", sq, c["flight"])
+            elif t:
+                self.alert(t, "EMERGENCY", f"squawk {sq} ({EMERGENCY_SQUAWKS[sq]}) reported by AeroSignals at "
+                           f"{time.strftime('%H:%M', time.gmtime(c['t']))} UTC, {c['url']} - not seen in our feed's "
+                           f"reports", key=f"EMERGENCY:{sq}", force=True)
+            elif self.wall() - c["t"] > AERO_FIND_S:
+                log.warning("AeroSignals: squawk %s on %s - the aircraft is not in our feeds (%s)", sq, c["flight"],
+                            ",".join(c["callsigns"]) or "no callsign")
+                self.notifier.send_post(c)
+            else:
+                continue
+            del self.aero_pending[uri]
+            self.aero_seen.add(c["pid"])
 
     def skydive_note(self, t: Track, now: float) -> str:
         """' [skydiving pattern: ...]' for alerts within 30 min of a lift, else ''."""
@@ -3334,6 +3522,9 @@ def parse_args(argv=None):
                    help="send the map page's relay callsign -> aircraft pairs heard near the airport "
                         "(only with RELAY_TOKEN set in the environment; '' to disable)")
     g.add_argument("--share-interval", type=float, default=300, help="seconds between those sends")
+    g.add_argument("--aerosignals-interval", type=float, default=120,
+                   help="seconds between reads of AeroSignals' squawk posts on Bluesky (a second source of "
+                        "emergency squawks on flights to / from Israel); 0 = never")
     g.add_argument("--viewer-url", default=os.getenv("VIEWER_URL", VIEWER_URL),
                    help="our flight map page, linked from alerts and posts as 'Map' ('' to leave out)")
     g.add_argument("--thread-hours", type=float, default=6,

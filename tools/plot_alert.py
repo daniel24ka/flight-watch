@@ -181,6 +181,64 @@ def points(tr: dict) -> list[dict]:
     return out
 
 
+_NAMED: dict | None = None
+CITY_FIX = {"ETM": "Ramon", "LCA": "Larnaca"}  # the standing data's "Southern District", "Larnarca"
+
+
+def named_airports() -> dict:
+    """IATA -> (lat, lon, city, ICAO) of the airports with an IATA code in the local standing-data checkout."""
+    global _NAMED
+    if _NAMED is None:
+        _NAMED = {}
+        for name in glob.glob(os.path.join(os.path.dirname(__file__), "..", "standing-data", "airports", "schema-01",
+                                           "*", "*.csv")):
+            with open(name, encoding="utf-8-sig") as f:
+                for row in csv.DictReader(f):
+                    try:
+                        if row.get("IATA"):
+                            _NAMED[row["IATA"]] = (float(row["Latitude"]), float(row["Longitude"]),
+                                                   row.get("Location") or row.get("Name") or "", row["ICAO"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+    return _NAMED
+
+
+def place_labels(air: list[dict], mine: list[dict], places: dict) -> dict:
+    """Map labels "SOF Sofia" -> (lat, lon): the given places (IATA codes get their city), the airports the flight
+    took off from and landed at, those named in its alerts (ICAO codes) and the nearest to each alert (40 nm).
+    The map's own place names are small at the zoom of a whole flight (LY5102 Warsaw - Sofia)."""
+    named = named_airports()
+    by_icao = {v[3]: k for k, v in named.items()}
+    out, seen = {}, set()
+
+    def add(code, lat, lon):
+        if code in seen:
+            return
+        seen.add(code)
+        city = CITY_FIX.get(code) or (named[code][2] if code in named else "")
+        out[f"{code} {city}" if city and city.lower() != code.lower() else code] = (lat, lon)
+
+    def nearest(lat, lon, nm):
+        d, code = min(((fw.haversine_nm(lat, lon, v[0], v[1]), k) for k, v in named.items()
+                       if abs(v[0] - lat) < 1 and abs(v[1] - lon) < 1.5), default=(1e9, None))
+        return code if d <= nm else None
+
+    for p in (air[0], air[-1]):  # the leg's ends: where it took off / landed when low there
+        code = nearest(p["lat"], p["lon"], 15) if (p["alt"] or 0) < 10000 else None
+        if code:
+            add(code, *named[code][:2])
+    for a in mine:
+        for icao in re.findall(r"\b[A-Z]{4}\b", a.get("message") or ""):
+            if icao in by_icao:
+                add(by_icao[icao], *named[by_icao[icao]][:2])
+        code = isinstance(a.get("lat"), (int, float)) and nearest(a["lat"], a["lon"], 40)
+        if code:
+            add(code, *named[code][:2])
+    for code, v in places.items():  # after the flight's own: where names would overlap, those are kept
+        add(code, v[0], v[1])
+    return out
+
+
 def airfields() -> list[tuple[float, float, int]]:
     """(lat, lon, elevation ft) of the airports in the local standing-data checkout; [] without it.
     Heliports are left out: many are on roofs (2.2 nm from PDX at 296 ft, 2.5 nm from EWR at 1,041 ft)."""
@@ -545,7 +603,8 @@ def build(rec: dict, alerts: list[dict], pts: list[dict], source: str, max_speed
 
     # distances in km east / north of the airport (equirectangular: fine at these ranges)
     lat0, lon0 = origin or (fw.AIRPORTS[airport][1:] if airport in fw.AIRPORTS else (air[0]["lat"], air[0]["lon"]))
-    places = {**fw.REGION_AIRPORTS, airport: (lat0, lon0)}  # an incident's own watched point too
+    # the region's airports and an incident's own watched point, the flight's own airports, with their cities
+    places = place_labels(air, mine, {**fw.REGION_AIRPORTS, airport: (lat0, lon0)})
     kx = 111.32 * math.cos(math.radians(sum(p["lat"] for p in air) / len(air)))
 
     def km(lat, lon):
@@ -1192,9 +1251,6 @@ function layers() {
       getFillColor: d => d.c, radiusUnits: "pixels", getRadius: 1.5, updateTriggers: {getPosition: Z}}),
     new deck.ScatterplotLayer({id: "airports" + TERRAIN, data: D.airports, getPosition: d => g0(d.p),
       getFillColor: [80, 80, 80], radiusUnits: "pixels", getRadius: 3, ...onGround(), terrainDrawMode: "offset"}),
-    new deck.TextLayer({id: "airport-names" + TERRAIN, data: D.airports, getPosition: d => g0(d.p),
-      getText: d => d.label, ...onGround(), terrainDrawMode: "offset",
-      getSize: 12, getColor: [60, 60, 60], getPixelOffset: [0, -12], fontSettings: {sdf: true}, outlineWidth: 4, outlineColor: [255, 255, 255, 230]}),
     // alert markers: their group's shape as a character (deck.gl points are only circles)
     new deck.TextLayer({id: "alerts", data: visible(), pickable: true, getPosition: d => P(A(d)),
       getText: d => G[d.g].glyph, characterSet: D.groups.map(g => g.glyph).join(""), fontFamily: "sans-serif",
@@ -1280,10 +1336,36 @@ function retime3d() { labelsDirty = true; map.setProps({layers: layers()}); }
 const over = document.createElement("div");
 over.style.cssText = "position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:1";
 document.getElementById("d3").appendChild(over);
+// airport names ("SOF Sofia"): HTML too, one size at any tilt (deck.gl's text shrank with the distance); a name
+// that would cover one placed before it (the flight's own airports come first) is left out
+const aptBox = document.createElement("div");
+aptBox.style.cssText = over.style.cssText;
+document.getElementById("d3").insertBefore(aptBox, over);
+const apts = D.airports.map(d => {
+  const e = document.createElement("span");
+  e.textContent = d.label;
+  e.style.cssText = "position:absolute;white-space:nowrap;font:700 14px sans-serif;color:#222;" +
+    "text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 2px #fff";
+  aptBox.appendChild(e);
+  return {d, e, w: e.offsetWidth, h: e.offsetHeight};
+});
+function layoutAirports(vp) {
+  const placed = [];
+  for (const a of apts) {
+    const p = vp.project(g0(a.d.p)), x = p[0] - a.w / 2, y = p[1] - a.h - 3;
+    const ok = p[0] > 0 && p[0] < vp.width && p[1] > 0 && p[1] < vp.height &&
+      !placed.some(b => x < b.x + b.w && b.x < x + a.w && y < b.y + b.h && b.y < y + a.h);
+    a.e.style.display = ok ? "" : "none";
+    if (!ok) continue;
+    placed.push({x, y, w: a.w, h: a.h});
+    a.e.style.transform = `translate(${x}px,${y}px)`;
+  }
+}
 let labelsDirty = true, labs = [];
 function layoutLabels() {
   const vp = map.getViewports && map.getViewports()[0];
   if (!vp) return;
+  layoutAirports(vp);
   if (labelsDirty) {
     labelsDirty = false;
     over.innerHTML = '<svg style="position:absolute;inset:0;width:100%;height:100%"></svg>';

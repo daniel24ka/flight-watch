@@ -489,6 +489,18 @@ TOWARD_ISRAEL (19 Oct 2026, the owner's wish; still checked, logged and in the f
 channel); `monitor.sh` sets it from `SENDTO` (channel).
 Each message is also appended to `--telegram-posts` (`posts_telegram.jsonl`, with `sent`), apart from `posts.jsonl`.
 
+**AeroSignals as a second source of squawks** (19 Oct 2026, the owner: "so we won't miss a squawk"). OS82 TLV -> VIE squawked
+7700 on 18 Oct over Bulgaria and diverted to Sofia while adsb.lol refused nearly every poll: nothing alerted. The monitor reads
+the bot's posts (`Monitor.aerosignals`, `--aerosignals-interval` 120 s, LOW priority, public Bluesky API; it answers 504 now and
+then: logged, read again next time). A post (`aero_case`, the template `tools/squawk_cases.py` parses) of a flight from / to
+an Israeli airport (`ISRAEL_IATA`) is looked for by callsign (the board's for that flight, else airline ICAO + number, also
+zero-padded: AUA082) in the remote feeds; the answers join the poll's batches, so the aircraft gets a normal track. Then
+`aero_alerts`: our own EMERGENCY within 3 h -> only logged; the aircraft found -> EMERGENCY on it "reported by AeroSignals"
+(map, links, Telegram as usual); not found within `AERO_FIND_S` (10 min) -> `Notifier.send_post` (log, console, Telegram with
+the post and FR24, `--telegram-posts`; not in `--jsonl`, no position). Posts > `AERO_MAX_AGE_S` (3 h) old are skipped; the post
+ids and EMERGENCY callsigns in the day's files are read at start (`past_aero`), so a restart does not repeat one. Tests and
+replays pass `--aerosignals-interval 0`. Not announced: squawks elsewhere (the bot posts ~2 a day) and its "Update:" replies.
+
 ## Testing
 
 No network access is assumed in tests: `tests/test_flight_watch.py` replaces the HTTP session

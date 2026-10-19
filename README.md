@@ -126,6 +126,14 @@ it gets one `GPS_SPOOFING` start in 6 h and never an episode's end
 unless the flight also has an alert of another kind. Each message sent is also appended to
 `posts_telegram.jsonl` (`--telegram-posts`; `monitor.sh`: `posts_telegram_YYYY-MM-DD.jsonl`), `"sent": false` when Telegram refused it.
 
+**Squawks from AeroSignals.** Every 2 min (`--aerosignals-interval`, `0` = off) the monitor reads the
+[AeroSignals](https://bsky.app/profile/spotterintel.bsky.social) bot on Bluesky, which posts each 7700 / 7600 / 7500
+worldwide a few minutes after it starts. A post about a flight to or from an Israeli airport is a second source:
+the aircraft is looked up in the feeds by its callsigns. If the monitor already alerted its squawk, nothing more is sent.
+If we have the aircraft, the alert is an EMERGENCY on it, with the post's link, our map and the rest. If it is not in our
+feeds within 10 min, the post alone goes to Telegram with the FR24 link. Posts over 3 h old (after a restart) are skipped,
+and the ones already sent are read back from the day's files.
+
 ## Storage and links
 
 No flight tracks are stored. Each alert is one line in `alerts.jsonl` with links to existing sites:
