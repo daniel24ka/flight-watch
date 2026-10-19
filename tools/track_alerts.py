@@ -7,9 +7,9 @@ One procedure for every place that analyses a track after the fact:
   tools/serve.py's /src/ locally), so the page never has its own copy of the checks.
 
 The flight is the leg around time `t` (airborne between ground stops, as capture_incident.flights), watched
-three times: from its origin and from its destination as if each were our airport (followed by its route
-beyond the 250 nm circle), and from the point at `t` with a circle around the whole flight (every report
-local, as for a flight near TLV). Alerts of one kind within 3 min of each other are one.
+three times: from its origin and from its destination as if each were our airport (TLV with its board;
+elsewhere followed from the start, as the monitor follows TLV's board flights anywhere), and from the point at
+`t` (followed too; the circle is at most 250 nm). Alerts of one kind within 3 min of each other are one.
 Nothing here reads the network: traces and airports are given.
 """
 from __future__ import annotations
@@ -59,7 +59,9 @@ def replay_watch(tr: dict, hexid: str, leg: dict, callsign: str | None, ends: li
     """Our alerts on the flight watched from `home` ({code, icao, lat, lon, radius?, label?}) as its
     departure ("D"), arrival ("A") or neither ("") - tests/replay.py with this one aircraft."""
     t0, t1 = leg["start"], leg["end"] + 900
-    pts = ci.trace_points(tr, t0, t1, 5)
+    # (trace_points keeps 10 min before t0; 2 min is enough before a take-off, and more took in the aircraft's
+    # previous landing: TO789 "ORY arrival on the ground 241 nm away" at Norwich, before its flight began)
+    pts = ci.trace_points(tr, t0 + 480, t1, 5)
     routes, airports = {}, {}
     if callsign and len(ends) == 2:
         routes[callsign] = f"{ends[0]['icao']}-{ends[1]['icao']}"
@@ -67,6 +69,11 @@ def replay_watch(tr: dict, hexid: str, leg: dict, callsign: str | None, ends: li
         airports[e["icao"]] = [e["lat"], e["lon"], e.get("code", ""), e.get("name", "")]
     meta = {"name": callsign or hexid, "airport": home["code"], "start": t0, "end": t1,
             "radius": home.get("radius", 250), "focus": [hexid], "step": 5}
+    if home["code"] != "TLV":
+        # the monitor follows its airport's flights anywhere (found on the TLV board); elsewhere there is no
+        # board, so the flight is followed from the start - or a diversion far from the destination is never
+        # seen (LX16 ZRH -> JFK landed at Bangor, ~330 nm out; the circle is at most 250 nm)
+        meta["follow"] = [hexid]
     if home["code"] not in fw.AIRPORTS:
         meta.update(airport_coords=[home["lat"], home["lon"]], icao=home["icao"])
     board = []
@@ -103,7 +110,7 @@ def analyze(traces: list[dict], hexid: str, t: float, ends: list[dict] | None = 
         return {"error": "no flight within 30 min of that time in the trace"}
     ends = [e for e in (ends or []) if e and e.get("icao") and e.get("lat") is not None]
     p = position_at(tr, min(max(t, leg["start"]), leg["end"]))
-    watches = [({"code": "SQK", "icao": "ZZZZ", "lat": p[1], "lon": p[2], "radius": 4000, "label": "near"}, "")]
+    watches = [({"code": "SQK", "icao": "ZZZZ", "lat": p[1], "lon": p[2], "radius": 250, "label": "near"}, "")]
     if len(ends) == 2:
         watches += [(dict(ends[0]), "D"), (dict(ends[1]), "A")]
     alerts = []

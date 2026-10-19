@@ -2002,3 +2002,59 @@ class SecondFeedTests(unittest.TestCase):
         fly(mon, feed, clock, "ae1234", path(32.6, 34.6, [90] * 3, [25000] * 3), flight="RCH123", t="C17")
         self.assertTrue(mon.tracks["ae1234"].military)
 
+
+
+class SquawkCaseTests(unittest.TestCase):
+    """Misses found by replaying the AeroSignals squawk cases (tools/squawk_cases.py, 19 Oct 2026)."""
+    TLV = (32.0114, 34.8867)
+
+    def test_departure_landing_short_of_its_destination_is_a_diversion(self):
+        """LY357 TLV -> FRA (7700) landed at Belgrade: only EMERGENCY."""
+        mon, feed, clock, alerts = with_routes()
+        mon.routes["ELY357"] = (clock(), "LLBG-LHBP")
+        ident = dict(flight="ELY357", r="4X-EKA", t="B738")
+        fly(mon, feed, clock, "738357", [dict(lat=self.TLV[0], lon=self.TLV[1], alt_baro="ground", gs=5, track=270)] * 3,
+            **ident)
+        fly(mon, feed, clock, "738357", path(*self.TLV, [300] * 6, [1500 + 800 * i for i in range(6)], gs=180), **ident)
+        clock.t += 5400
+        fly(mon, feed, clock, "738357", path(44.95, 20.10, [130] * 6, [3000 - 400 * i for i in range(6)], gs=150),
+            **ident)
+        fly(mon, feed, clock, "738357", [dict(lat=44.8206, lon=20.3043, alt_baro="ground", gs=12, track=120)] * 4,
+            **ident)
+        hits = [a for a in alerts if a["kind"] == "DIVERSION"]
+        self.assertEqual(len(hits), 1, kinds(alerts))
+        self.assertIn("departure bound for LHBP", hits[0]["message"])
+
+    def test_route_alone_does_not_make_a_departure(self):
+        """The same landing by an aircraft never seen leaving TLV (stale route data): not a diversion."""
+        mon, feed, clock, alerts = with_routes()
+        mon.routes["ELY357"] = (clock(), "LLBG-LHBP")
+        fly(mon, feed, clock, "738357", path(44.95, 20.10, [130] * 6, [3000 - 400 * i for i in range(6)], gs=150),
+            flight="ELY357", r="4X-EKA", t="B738")
+        fly(mon, feed, clock, "738357", [dict(lat=44.8206, lon=20.3043, alt_baro="ground", gs=12, track=120)] * 4,
+            flight="ELY357", r="4X-EKA", t="B738")
+        self.assertNotIn("DIVERSION", kinds(alerts))
+
+    def test_low_return_under_an_emergency_squawk(self):
+        """DL2692 MSP -> JFK squawked 7700 at 3,775 ft and landed back."""
+        mon, feed, clock, alerts = with_board([board_row("LY", "5", "D", local_time(Clock(), 0), "ATH")])
+        ident = dict(flight="ELY005", r="4X-EKA", t="B738")
+        fly(mon, feed, clock, "738005", [dict(lat=self.TLV[0], lon=self.TLV[1], alt_baro="ground", gs=5, track=270)] * 3,
+            **ident)
+        out = path(*self.TLV, [270] * 12 + [90] * 12, [1000 + 250 * i for i in range(12)] + [3750 - 250 * i for i in range(12)],
+                   gs=180, squawk="7700")
+        fly(mon, feed, clock, "738005", out, **ident)
+        fly(mon, feed, clock, "738005", [dict(lat=self.TLV[0], lon=self.TLV[1], alt_baro="ground", gs=5, track=270,
+                                              squawk="7700")] * 3, **ident)
+        self.assertIn("RETURNED", kinds(alerts))
+
+    def test_circling_that_ends_on_final_is_not_holding(self):
+        """FR6789 (diverting to Venice): "circling for 30 min ... at 275 ft"."""
+        mon, feed, clock, alerts = with_routes()
+        mon.routes["RYR6789"] = (clock(), "LIPQ-LFOB")
+        states = racetrack(8, alt=0, gs=180)
+        for i, st in enumerate(states):
+            st["alt_baro"] = 9000 - 8000 * i // len(states)
+            st["baro_rate"] = -230
+        fly(mon, feed, clock, "4d225c", states, flight="RYR6789", r="9H-QDD", t="B738")
+        self.assertNotIn("HOLDING", kinds(alerts))

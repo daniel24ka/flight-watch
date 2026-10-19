@@ -194,6 +194,43 @@ class BoardArchive(unittest.TestCase):
         self.assertEqual(len(node("FB.flights(DATA)", [ROWS[0]] * 3)), 1)  # repeated states of a row: one flight
 
 
+# standing-data files for the airline resolution (Schedule.resolve / FB.resolveAirlines)
+RESOLVE_FILES = {
+    "airlines/schema-01/airlines.csv": (
+        "\ufeffCode,Name,ICAO,IATA,PositioningFlightPattern,CharterFlightPattern\n"
+        "CYF,\"Chair Airlines, Switzerland\",CYF,U8,,\n"           # one airline with U8 (a quoted comma)
+        "NOS,Neos,NOS,NO,,\nAUS,Aus-Air,AUS,NO,,\n"                # NO twice: the one flying to TLV
+        "XAA,One,XAA,Q9,,\nXAB,Two,XAB,Q9,,\n"                     # Q9 twice, neither: unresolved
+        "ZZ,No ICAO,,ZZ,,\n"),
+    "routes/schema-01/N/NOS-all.csv": "Callsign,Code,Number,AirlineCode,AirportCodes\nNOS123,NOS,123,NOS,LIMC-LLBG\n",
+    "routes/schema-01/A/AUS-all.csv": "Callsign,Code,Number,AirlineCode,AirportCodes\nAUS1,AUS,1,AUS,YSSY-YMML\n",
+    "routes/schema-01/X/XAA-1.csv": "Callsign,Code,Number,AirlineCode,AirportCodes\nXAA1,XAA,1,XAA,EGLL-LFPG\n",
+}
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class AirlineResolutionMatchesPython(unittest.TestCase):
+    def test_same_codes_resolved(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            for path, text in RESOLVE_FILES.items():
+                os.makedirs(os.path.dirname(os.path.join(d, path)), exist_ok=True)
+                with open(os.path.join(d, path), "w", encoding="utf-8") as f:
+                    f.write(text)
+            sd = fw.StandingData(None, d)
+            py = {c: sd.airline_by_iata(c, "LLBG") for c in ("U8", "NO", "Q9", "ZZ")}
+        rows = [row(c, "1", "A", "2026-10-08T10:00:00", "XXX") for c in ("U8", "NO", "Q9", "ZZ", "LY", "ENT")]
+        js = node("""(async () => {
+            globalThis.fetch = async u => {
+              const path = u.slice(FB.STANDING.length + 1), text = DATA.files[path];
+              return {ok: text !== undefined, text: async () => text};
+            };
+            return FB.resolveAirlines(DATA.rows);
+        })()""", {"files": RESOLVE_FILES, "rows": rows})
+        self.assertEqual(py, {"U8": "CYF", "NO": "NOS", "Q9": None, "ZZ": None})
+        self.assertEqual(js, {k: v for k, v in py.items() if v})  # (LY is in the table, ENT an ICAO code)
+
+
 @unittest.skipUnless(NODE, "node not installed")
 class Situations(unittest.TestCase):
     def label(self, d, status, sched, est, now):

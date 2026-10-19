@@ -42,7 +42,9 @@ without keeping our own list. The AeroSignals bot on Bluesky (spotterintel.bsky.
 ~2 squawks a day; public API, no login) posts each 7700 / 7600 / 7500 a few minutes after it starts, and the
 outcome as a reply. Each post -> callsign (airline ICAO + number, or a route-data callsign with the post's
 route) -> hex from ADS-B Exchange's heatmap -> its trace, which must squawk the code -> the leg replayed
-from the origin, the destination and the squawk point. Results in `squawks/` (git-ignored), including
+from the origin, the destination and the squawk point (`tools/track_alerts.py`; away from TLV there is no
+board, so the replay follows the aircraft from the start, fixture meta `follow`, as the monitor follows TLV's
+board flights anywhere - `--radius` is capped at 250 nm). Results in `squawks/` (git-ignored), including
 `squawk_cases.xlsx`. Never asks adsb.lol (the monitor's feed); ADS-B Exchange one request at a time.
 
 `docs/` is published with GitHub Pages (e.g. `docs/fz1073_map.html`, made by `tools/plot_alert.py
@@ -80,7 +82,9 @@ drawn track with the alert's point; "our map / ADS-B Exchange / both" puts ADS-B
 `showTrace` + `timestamp`, with `startTime` / `endTime` only at ends known to be real (ground, or < 200 kt),
 because adsb.lol's coverage is thinner than ADS-B Exchange's (ET-AWJ, 10 Oct 2026: 15 KB against 104 KB for the
 day; adsb.lol heard 2 min of the Amman departure, then nothing for 7 h, and `FB.legs` joins that gap). Without
-a trace: live for 20 min after the alert, then the replay. A replay shows one UTC day.
+a trace: live for 20 min after the alert, then the replay. A replay shows one UTC day. With no track of ours to draw,
+ADS-B Exchange's replay is put in view (beside ours on a wide screen, alone on a phone; the viewer's remembered choice is
+kept): since 18 Oct 2026 adsb.lol answers its trace files with a browser check (403), also through the worker.
 
 **Flight pages** (`docs/flights.html`, `docs/flight_map.html`, shared `docs/flightboard.js`;
 local helper `tools/serve.py`): the board table and a live map of one flight, processed in the
@@ -100,8 +104,10 @@ board logic is a port of `Schedule.load` (slot grouping - one airline with two n
 ENT238 and ENT368 from KTW were both due 04:00 on 14 Oct 2026, and SP-ESD flying ENT368 was taken as ENT238 -, lowest flight number = operating carrier,
 callsign variants), `FB.AIRLINE_ICAO` is a copy of `AIRLINE_ICAO`, `FB.israelEpoch` reads board
 times as Python does (fold=0 at DST changes), and `tests/test_pages.py` runs the JS under node on
-the same rows and fails when they differ - change both together. Not ported yet: Python's
-`Schedule.resolve` (unknown airline codes via route data) and every alert check. The pages load
+the same rows and fails when they differ - change both together. `FB.resolveAirlines` is `Schedule.resolve`
+(airline codes missing from the table, via the standing data; 19 Oct 2026, the same 9 codes as the monitor on
+that day's board, ~10 s, so `flights.html` shows the board first and redraws, the map waits at most 4 s); its CSV
+reading is quote-aware like Python's. The alert checks are not ported: the map runs the Python (see below). The pages load
 `flightboard.js?v=<first 8 hex of its sha256>`: GitHub Pages lets browsers cache files for 10 min, and a
 new page with the old script failed ("FB.blocked is not a function"); a test fails until `v` is updated.
 
@@ -205,7 +211,16 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   never seen). **RETURNED**: a TLV departure landing back at TLV after reaching 40 nm or
   `RETURN_MIN_ALT` (10,000 ft): AS1282 (door plug, 6 Jan 2024, replay) climbed to 16,000 ft and landed
   back at Portland never more than 29 nm out, inside `--off-course-min-dist` (60 nm), so neither
-  TURNING_BACK nor the 40 nm rule saw it, and it squawked nothing.
+  TURNING_BACK nor the 40 nm rule saw it, and it squawked nothing. Under an emergency squawk (or an EMERGENCY
+  alert in the last 3 h) any return after a climb above 1,500 ft counts (DL2692, MSP -> JFK, 7700 at 3,775 ft).
+  A TLV **departure** landing more than `DIVERTED_NM` (30) from its destination (route data) is a DIVERSION too
+  (`Monitor.destination` / `other_end`; LY357 TLV -> FRA, 7700, landed at Belgrade: only EMERGENCY before). It
+  must be seen leaving (`Track.left_home`: on the ground or low within 8 nm, or first heard climbing within 30 nm;
+  kept across a callsign change in the air - LOT6ME -> LOT6212) or be on the board: today's routes on 2023
+  callsigns made four "PDX departures" land at Seattle in the QX2059 replay.
+  Found with the AeroSignals squawk cases (19 Oct 2026): of 251 replayed, 74 had only EMERGENCY; 15 diversions and
+  2 returns among them, now alerted. The other 54: 53 landed at their destination (nothing to see beyond the
+  squawk; descents <= ~5,500 ft/min) and one left coverage at cruise.
   A landing (on the ground at taxi speed) ends the leg: `was_airborne`, `max_dist` and the
   learned route direction reset. Before this, an arrival parked overnight and given its morning
   departure's callsign (LOT7MA -> LOT4CG) was RETURNED: 70 false alarms in one night (6 Oct 2026),
@@ -317,7 +332,8 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   aircraft and non-airline traffic orbit as their job (tankers, patrols, training) and are silent, and so is
   circling below `HOLDING_LOCAL_ALT` (10,000 ft) with no board row nor route (circuits, training: RJA017, A321
   JY-AYV, 18 Oct 2026, 4,300 ft 15 nm east of Amman 2 h after taking off there; a flight that can't land is a
-  scheduled one, holding higher).
+  scheduled one, holding higher). Nor circling that reaches its period descending below `HOLDING_LANDING_ALT`
+  (3,000 ft): the approach (FR6789 "circling for 30 min ... at 275 ft" on final at Venice, squawk replay).
 - **SHARP_TURN**: implied bank angle from the turn rate and speed >= `--max-bank` (35 deg),
   everywhere including near airports. Airliners stay below ~25-30; FZ1073's U-turn was a
   normal-rate turn (~25 deg), which is why reversals and sharpness are separate alerts.
@@ -330,6 +346,9 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   below 65 deg in the replay; FZ1073 reached 165 deg. A route-based OFF_COURSE is not raised while the flight descends
   (<= -500 ft/min, below FL300) toward a regional airport <= 150 nm ahead (`descending_toward`): THY6264, listed LTBA-WSSS,
   flew Istanbul - Amman on 14 Oct 2026 and alerted at FL254 descending, 90 nm from Amman.
+  Neither within `--off-course-min-dist` of the far end (route data: an arrival's origin, a departure's
+  destination): climbing out "away from" the destination and approach turns "back" (squawk replay: TO4755 out of
+  Barcelona, AA2045 on approach to SFO "heading back to PHL, 2175 nm out").
 - **TOWARD_ISRAEL**: the hijack scenario of a flight *not* bound for Israel turned toward it.
   Military aircraft (readsb dbFlags) are exempt: on 6 Oct 29 of 33 alerts were USAF KC-135
   tankers, a military Gulfstream (IRON) and a Canadian C-130 operating over Israel for hours.
@@ -452,7 +471,8 @@ the message's `[also: ...]` names another kind; 83 of the 429 would have been se
 NIC 0 is the aircraft saying it does not trust its GPS, while it flies on inertial and its track looks normal (16 Oct
 2026: an episode near Amman went out as a start and an end with nothing to see on the map). So GPS_DEGRADED is skipped,
 and GPS_SPOOFING sends one start in `TG_SPOOF_S` (6 h) and never an end; all stay in the files. MASS_SILENCE is
-skipped too (18 Oct 2026: 9 of 66 messages, nothing to see on a map, mostly while the API refused our polls).
+skipped too (18 Oct 2026: 9 of 66 messages, nothing to see on a map, mostly while the API refused our polls), and
+TOWARD_ISRAEL (19 Oct 2026, the owner's wish; still checked, logged and in the files).
 `--telegram-to chat|channel` picks `TELEGRAM_CHAT_ID` (default) or `TELEGRAM_CHANNEL_ID` (the public, read-only
 channel); `monitor.sh` sets it from `SENDTO` (channel).
 Each message is also appended to `--telegram-posts` (`posts_telegram.jsonl`, with `sent`), apart from `posts.jsonl`.
@@ -526,10 +546,10 @@ and fetching a cold start's ~60 files in one cycle held up the local poll for ov
   airline list (`StandingData.airline_by_iata`). IATA codes are reused (NO = Neos and Aus-Air, about
   a third of codes have several airlines), so the candidate with routes through TLV wins; still
   ambiguous means unmapped. Oct 2026: 3F = FIE, H4 = HYS, H7 = HYM, NO = NOS, U8 = CYF. The list
-  disagrees with two built-in entries (9U `MLD` absent, GQ listed as `BSY` not `SEH`): unverified.
+  disagrees with two built-in entries: GQ listed as `BSY` (a defunct US airline), but GQ720 / 721 fly as SEH720 / 721
+  (Sky Express, SX- A20Ns; logs of 10-18 Oct 2026), so `SEH` is right; 9U `MLD` (Air Moldova) is absent and was never seen.
 
-- **Flight pages, next steps.** Show alerts on the map / list (needs the checks in JS, or the
-  monitor's `alerts.jsonl` served by the helper); port `Schedule.resolve`. **Live data on GitHub
+- **Flight pages, next steps.** Show alerts on the board list (the map has them: `a=`, `analyze`). **Live data on GitHub
   Pages needs a relay with CORS** (posts link the Pages map): adsb.lol sends no CORS header on any
   endpoint (`/v2/*`, `/data/traces/*`, Oct 2026), so a page there can't read it whatever it tries.
   `FB.RELAY` is the owner's Cloudflare Worker (https://flight-watch-relay.yuvharpaz.workers.dev, code
@@ -552,7 +572,7 @@ and fetching a cold start's ~60 files in one cycle held up the local poll for ov
     days without commits. 144 KV writes a day.
   - **The monitor**, while it runs with `RELAY_TOKEN` set: `Monitor.share_callsigns` POSTs the pairs
     heard since the last send every `--share-interval` (300 s), LOW priority, never stopping the poll.
-  Remove the Cron Trigger (it only gets 429 and costs 288 writes a day of the free 1,000). The owner agreed to this small,
+  The Cron Trigger was removed (it only got 429 and cost 288 writes a day of the free 1,000). The owner agreed to this small,
   expiring store (8 Oct 2026). The map then draws that aircraft's leg to / from TLV from today's
   trace (`FB.legs` / `FB.legAt`). The route database is ignored when it disagrees with the board's
   airport (ELY5064 listed BCN, board HER). opendata.adsb.fi sends no CORS

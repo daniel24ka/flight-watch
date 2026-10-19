@@ -345,13 +345,27 @@ FB.onGround = ac => ac && (ac.alt_baro === "ground" || ((ac.gs || 0) < 50 && (+a
 
 // ------------------------------------------------------------------ standing data (routes, airports)
 const csvCache = new Map();
+/** One CSV line's fields, quotes as Python's csv module reads them ("Airline, Inc." is one field). */
+FB.csvLine = function (line) {
+  const out = [];
+  let cur = "", q = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (q) {
+      if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') q = false; else cur += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === ",") { out.push(cur); cur = ""; } else cur += ch;
+  }
+  out.push(cur);
+  return out;
+};
 async function csvFile(path) {
   if (!csvCache.has(path)) csvCache.set(path, (async () => {
     const rows = new Map();
     try {
       const r = await fetch(FB.STANDING + "/" + path);
-      if (r.ok) for (const line of (await r.text()).replace(/^﻿/, "").split(/\r?\n/).slice(1)) {
-        const c = line.split(",");
+      if (r.ok) for (const line of (await r.text()).replace(/^\uFEFF/, "").split(/\r?\n/).slice(1)) {
+        const c = FB.csvLine(line);
         if (c[0]) rows.set(c[0], c);
       }
     } catch (e) { /* offline: no route data */ }
@@ -359,6 +373,37 @@ async function csvFile(path) {
   })());
   return csvCache.get(path);
 }
+/** Any route of airline `code` through `airport` (ICAO)? As flight_watch.StandingData.serves: big airlines'
+ *  routes are split by the flight number's first digit. */
+async function serves(code, airport) {
+  for (const name of [code + "-all.csv", ..."123456789".split("").map(d => code + "-" + d + ".csv")]) {
+    const rows = await csvFile("routes/schema-01/" + code[0] + "/" + name);
+    if ([...rows.values()].some(r => (r[4] || "").split("-").includes(airport))) return true;
+    if (name.endsWith("-all.csv") && rows.size) return false;  // not split: that was all of it
+  }
+  return false;
+}
+/** {IATA: ICAO} for the board's airline codes missing from `map`, as flight_watch.Schedule.resolve
+ *  (StandingData.airline_by_iata): the only airline with that IATA code in the standing data, or of several
+ *  (codes are reused: NO is Neos and Aus-Air) the only one with routes through `airport`. */
+FB.resolveAirlines = async function (records, airport = "LLBG", map = FB.AIRLINE_ICAO) {
+  const codes = [...new Set(records.map(r => String(r.CHOPER || "").trim().toUpperCase()))]
+    .filter(c => c && c.length !== 3 && !map[c]);
+  const out = {};
+  if (!codes.length) return out;
+  const airlines = [...(await csvFile("airlines/schema-01/airlines.csv")).values()];
+  for (const iata of codes) {
+    const cands = [...new Set(airlines.filter(r => r.length > 3 && r[3] === iata && /^[A-Z]{3}$/.test(r[2] || ""))
+                                      .map(r => r[2]))].sort();
+    if (cands.length === 1) out[iata] = cands[0];
+    else if (cands.length > 1) {
+      const serving = [];
+      for (const c of cands) if (await serves(c, airport)) serving.push(c);
+      if (serving.length === 1) out[iata] = serving[0];
+    }
+  }
+  return out;
+};
 /** ["LHBP", "LLBG"] for a callsign, as flight_watch.StandingData.route; null when unknown. */
 FB.route = async function (callsign) {
   const m = /^([A-Z]{3})([0-9][0-9A-Z]*)$/.exec(callsign || "");

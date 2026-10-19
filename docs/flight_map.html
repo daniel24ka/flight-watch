@@ -4,7 +4,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="https://unpkg.com/deck.gl@9.1.14/dist.min.js"></script>
 <script src="https://unpkg.com/@loaders.gl/terrain@4.2.1/dist/dist.min.js"></script>
-<script src="flightboard.js?v=3da86189"></script>  <!-- v = first 8 hex of its sha256: a changed file is never taken from the browser cache -->
+<script src="flightboard.js?v=adcd8b94"></script>  <!-- v = first 8 hex of its sha256: a changed file is never taken from the browser cache -->
 <style>
 html,body{margin:0;height:100%;font-family:sans-serif;color:#222;background:#fff}
 body{display:flex;flex-direction:column}
@@ -244,14 +244,14 @@ async function busyTrack(f, hex) {
 
 // ---------------------------------------------------------------- the flight of an alert (?hex=..&t=..)
 /** Our map beside / instead of ADS-B Exchange's (an iframe, loaded only once it is shown). */
-function setView(v) {
+function setView(v, remember = true) {
   $("main").className = "v-" + v;
   for (const b of $("views").children) b.className = b.dataset.v === v ? "on" : "";
   if (v !== "ours" && alertOf && alertOf.ext && $("ext").dataset.url !== alertOf.ext) {
     $("ext").dataset.url = alertOf.ext;
     $("ext").src = alertOf.ext + "&hideSideBar";  // its aircraft list would fill the half screen
   }
-  try { localStorage.setItem("view", v); } catch (e) { /* private window: not remembered */ }
+  if (remember) try { localStorage.setItem("view", v); } catch (e) { /* private window: not remembered */ }
 }
 
 /** The flight the alert was about, whenever the link is opened: still flying = live (as any ?hex=
@@ -277,7 +277,11 @@ async function alertView() {
   $("views").style.display = "";
   let v = null;
   try { v = localStorage.getItem("view"); } catch (e) { /* private window */ }
-  setView(/^(ours|ext|both)$/.test(v || "") ? v : innerWidth >= 900 ? "both" : "ours");
+  if (!flight && !live && v !== "both")
+    // nothing of ours to draw (since 18 Oct 2026 adsb.lol refuses its trace files to programs): ADS-B Exchange's
+    // replay, without changing the viewer's remembered choice
+    setView(innerWidth >= 900 ? "both" : "ext", false);
+  else setView(/^(ours|ext|both)$/.test(v || "") ? v : innerWidth >= 900 ? "both" : "ours");
   if (live) return show(f, null, false, false, hex);
   const when = x => FB.fmt(x, ZONE, "dhm");
   fitted = false;
@@ -285,6 +289,7 @@ async function alertView() {
   cur = {f, ac: null, hex, cs, hexMode: true, trail: flight ? flight.leg : [], raw, traceDone: true, ends: [], ended: true, fromTrace: !!flight, fetched: now,
          msg: flight ? `${flight.landed ? "Landed" : "Last heard"} ${when(flight.end)}. The blue line is the flight of the alert ` +
                        `(from ${when(flight.start)}); the orange dot is where it was at the alert, ${when(t)}.`
+            : (raw.errors || []).some(m => /HTTP 403$/.test(m)) ? traceProblem(raw.errors)
             : failed ? `The track of the flight at ${when(t)} could not be loaded now. ADS-B Exchange shows it.`
             : `adsb.lol has no track of this aircraft around ${when(t)}. ADS-B Exchange may show it.`};
   history.replaceState(null, "", "?" + withView(new URLSearchParams(f.offBoard ? {hex, t} : {f: f.flight, d: f.dir[0], hex, t})));
@@ -672,7 +677,11 @@ for (const b of $("views").children) b.onclick = () => setView(b.dataset.v);
 setInterval(() => cur && render(), 5000);  // "last seen" keeps counting between polls
 (async () => {
   try {
-    flights = FB.flights(await FB.fetchBoard());
+    const records = await FB.fetchBoard();
+    // airline codes the built-in table lacks, from the route data (as the monitor's Schedule.resolve); at most 4 s
+    const extra = await Promise.race([FB.resolveAirlines(records).catch(() => ({})),
+                                      new Promise(ok => setTimeout(() => ok({}), 4000))]);
+    flights = FB.flights(records, {...FB.AIRLINE_ICAO, ...extra});
   } catch (e) { $("info").textContent = "could not load the flight board: " + e.message; return; }
   const want = params.get("f"), hex = (params.get("hex") || "").toLowerCase().replace(/[^0-9a-f~]/g, "");
   if (hex) {  // an aircraft (alert posts link this way); its board flight when the post names it

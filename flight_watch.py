@@ -171,6 +171,8 @@ EARLY_DROP, EARLY_MIN = 1000, 10
 MISSED_LANDING_S, MISSED_LANDING_KT = 2400, 150
 AMM_LOCAL_NM, AMM_LOCAL_S = 40, 1200  # around_amman: within 40 nm of Amman for 20 min
 HOLDING_LOCAL_ALT = 10000  # circling lower with no route is training, not holding (check_holding)
+HOLDING_LANDING_ALT = 3000  # circling that reaches its period descending below this is a landing approach
+DIVERTED_NM = 30  # a departure on the ground this far from its destination landed elsewhere (check_landing)
 BLIND_S = 180  # no answered local poll for this long after an aircraft's last report: we did not see it go
 TAKEOFF_MAX_GAP_S, TAKEOFF_MAX_ALT = 180, 10000  # a take-off is seen: ground, then airborne within 3 min, low
 # conditions that last while a flight keeps flying the same way: repeated every --repeat-minutes, not
@@ -745,6 +747,7 @@ class Track:
     climb_peak: int = 0      # highest altitude since take-off held on two reports in a row (EARLY_DESCENT)
     flown_cs: str = ""       # a callsign whose flight to / from our airport it has completed (end_leg)
     feed: str = ""           # the provider of its newest report
+    left_home: bool = False  # seen on the ground or low at our airport in this leg (a departure, not just by route)
     sent: deque = field(default_factory=lambda: deque(maxlen=MAP_ALERTS))  # (kind, data time) of its alerts, for map links
 
     @property
@@ -1736,7 +1739,7 @@ class Monitor:
         kind = self.classify(t)[0]
         if kind in ("DEP", "ARR") and (kind == "DEP") == (d > 15):
             t.flown_cs, t.sched = t.callsign, None  # (the board row, or the route data's direction)
-        t.was_airborne, t.max_dist, t.route_dir, t.max_alt = False, 0.0, 0, 0
+        t.was_airborne, t.max_dist, t.route_dir, t.max_alt, t.left_home = False, 0.0, 0, 0, d < 15
         if unseen:
             t.takeoff, t.leg_start = 0.0, t.last.t
 
@@ -1767,6 +1770,7 @@ class Monitor:
                 return
             log.info("%s is now %s: a new leg", t.label(), new)
             t.flown_cs = ""
+            t.left_home = t.left_home and bool(t.last) and not t.last.on_ground  # (same flight: LOT6ME -> LOT6212)
             t.sched, t.route_dir, t.was_airborne, t.max_dist, t.leg_start = None, 0, False, 0.0, now
             t.max_alt = 0
         t.callsign, t.cs_pending = new, None
@@ -1809,6 +1813,9 @@ class Monitor:
                 self.alert(t, "CONTACT_RESTORED", f"heard again at {s.alt} ft")
         if (s.on_ground or (s.alt or 0) < 3000) and nearest_airport(s.lat, s.lon, israeli=True)[1] < 8:
             t.israeli = True
+        if ((s.on_ground or (s.alt or 0) < 3000) and d < 8
+                or len(t.samples) <= 2 and d < 30 and (s.alt or 0) < 10000 and (s.vrate or 0) > 300):
+            t.left_home = True  # (or first heard climbing out: RYR6VV at 5,600 ft 6 nm from Nador)
         amm = haversine_nm(s.lat, s.lon, *REGION_AIRPORTS["AMM"][:2])
         if (s.on_ground and amm < 5) or (len(t.samples) <= 2 and amm < 15 and (s.alt or 0) < 8000
                                          and (s.vrate or 0) > 300):
@@ -2288,6 +2295,12 @@ class Monitor:
         periods = int(minutes // a.holding_minutes)
         if periods > t.hold_alerted:
             t.hold_alerted = periods
+            if (s.alt or 0) < HOLDING_LANDING_ALT and (s.vrate or 0) < 0:
+                # on final: the circling is ending in a landing (FR6789, 17 Oct 2026, "circling for 30 min ...
+                # at 275 ft" on short final at Venice, in the AeroSignals squawk replay)
+                log.info("%s circled %.0f min, now descending through %s ft: landing - not alerted as holding",
+                         t.label(), minutes, s.alt)
+                return
             if (s.alt or 0) < HOLDING_LOCAL_ALT and not t.sched and not self.routes.get(t.callsign, (0, None))[1]:
                 # no route and low: circuits / training (RJA017 at 4,300 ft near Amman, 18 Oct 2026); a
                 # flight that can't land is a scheduled one, holding higher
@@ -2368,34 +2381,75 @@ class Monitor:
         if not (s.on_ground and t.was_airborne):
             return
         if kind == "ARR" and d > 15:
-            apt, ad = nearest_airport(s.lat, s.lon)
-            field = self.standing.airfield_near(s.lat, s.lon) if self.standing else None
-            episode = ((t.spoof and s.t - t.spoof_last <= 1800 and t.spoof)
-                       or (t.gps and s.t - t.gps_last <= 1800 and t.gps))
-            # A landing is at an airport. On 11-12 Oct 2026 three arrivals touched down at TLV while
-            # their GPS still gave a fake place ("on the ground" 92, 95 and 108 nm away, 33-63 nm
-            # from any airport). Without the list of airports: not during a GPS episode.
-            fake = self.fake_place(t, s)
-            if fake:  # (the spoofer's place is an airport: Amman)
-                self.note(t, "ground", f"reported on the ground {d:.0f} nm from {self.args.airport} at "
-                          f"{s.lat:.4f},{s.lon:.4f} during {fake} - not taken as a landing")
-                return
-            if (field[1] > LANDING_AIRPORT_NM) if field else (episode and ad > LANDING_AIRPORT_NM):
-                self.note(t, "ground", f"reported on the ground {d:.0f} nm from {self.args.airport} at "
-                          f"{s.lat:.4f},{s.lon:.4f}, " + (f"{field[1]:.0f} nm from the nearest airport ({field[0]})"
-                                                          if field else f"during {episode}")
-                          + " - not taken as a landing")
-                return
-            if field and ad >= 20:
-                apt, ad = field
-            at = f" ({ad:.0f} nm from {apt})" if ad < 20 else ""
-            self.alert(t, "DIVERSION", f"{self.args.airport} arrival on the ground "
-                       f"{d:.0f} nm away at {s.lat:.4f},{s.lon:.4f}{at}")
-        elif kind == "DEP" and d < 15 and (t.max_dist > 40 or t.max_alt >= RETURN_MIN_ALT):
+            place = self.landing_place(t, d)
+            if place is not None:
+                self.alert(t, "DIVERSION", f"{self.args.airport} arrival on the ground "
+                           f"{d:.0f} nm away at {s.lat:.4f},{s.lon:.4f}{place}")
+        elif kind == "DEP" and d > 15:
+            # a departure landing short of its destination: LY357 (TLV -> FRA, 7700) landed at Belgrade, and 14 of
+            # the 74 AeroSignals squawk cases whose replay raised only EMERGENCY landed elsewhere (19 Oct 2026)
+            # (seen leaving, or the board's: the route data alone gave four "PDX departures" landing at Seattle
+            # in the QX2059 replay - today's routes on 2023 callsigns)
+            dest = self.destination(t) if (t.sched or t.left_home) else None
+            if dest and haversine_nm(s.lat, s.lon, dest[1], dest[2]) > DIVERTED_NM:
+                place = self.landing_place(t, d)
+                if place is not None:
+                    self.alert(t, "DIVERSION", f"{self.args.airport} departure bound for {dest[0]} on the ground "
+                               f"{haversine_nm(s.lat, s.lon, dest[1], dest[2]):.0f} nm from it at "
+                               f"{s.lat:.4f},{s.lon:.4f}{place}")
+        elif kind == "DEP" and d < 15 and (t.max_dist > 40 or t.max_alt >= RETURN_MIN_ALT
+                                           or t.max_alt >= 1500 and (t.squawk in EMERGENCY_SQUAWKS or any(
+                                               k.startswith("EMERGENCY") and s.t - at <= 3 * 3600
+                                               for k, (at, _) in t.alerted.items()))):
             # Far out, or high: AS1282 (door plug, 6 Jan 2024) climbed to 16,000 ft and landed back
-            # 29 nm out at most - too close for TURNING_BACK (--off-course-min-dist) and for 40 nm.
+            # 29 nm out at most - too close for TURNING_BACK (--off-course-min-dist) and for 40 nm. Or
+            # squawking an emergency: DL2692 (MSP -> JFK, 7700) landed back from 3,775 ft.
             self.alert(t, "RETURNED", f"{self.args.airport} departure landed back at "
                        f"{self.args.airport} (had reached {t.max_dist:.0f} nm, {t.max_alt} ft)")
+
+    def landing_place(self, t: Track, d: float) -> str | None:
+        """For a landing away from our airport: " (N nm from XXX)" (or "") when believable, None when not
+        (logged). A landing is at an airport. On 11-12 Oct 2026 three arrivals touched down at TLV while
+        their GPS still gave a fake place ("on the ground" 92, 95 and 108 nm away, 33-63 nm from any
+        airport). Without the list of airports: not during a GPS episode."""
+        s = t.last
+        apt, ad = nearest_airport(s.lat, s.lon)
+        field = self.standing.airfield_near(s.lat, s.lon) if self.standing else None
+        episode = ((t.spoof and s.t - t.spoof_last <= 1800 and t.spoof)
+                   or (t.gps and s.t - t.gps_last <= 1800 and t.gps))
+        fake = self.fake_place(t, s)
+        if fake:  # (the spoofer's place is an airport: Amman)
+            self.note(t, "ground", f"reported on the ground {d:.0f} nm from {self.args.airport} at "
+                      f"{s.lat:.4f},{s.lon:.4f} during {fake} - not taken as a landing")
+            return None
+        if (field[1] > LANDING_AIRPORT_NM) if field else (episode and ad > LANDING_AIRPORT_NM):
+            self.note(t, "ground", f"reported on the ground {d:.0f} nm from {self.args.airport} at "
+                      f"{s.lat:.4f},{s.lon:.4f}, " + (f"{field[1]:.0f} nm from the nearest airport ({field[0]})"
+                                                      if field else f"during {episode}")
+                      + " - not taken as a landing")
+            return None
+        if field and ad >= 20:
+            apt, ad = field
+        return f" ({ad:.0f} nm from {apt})" if ad < 20 else ""
+
+    def destination(self, t: Track) -> tuple[str, float, float] | None:
+        """(ICAO, lat, lon) of a departure's destination, from the route data when it starts at our airport."""
+        return self.other_end(t, "DEP")
+
+    def other_end(self, t: Track, kind: str) -> tuple[str, float, float] | None:
+        """(ICAO, lat, lon) of the far end of our airport's flight - a departure's destination ("DEP"), an
+        arrival's origin ("ARR") - from the route data when it has our airport at the other end."""
+        route = self.routes.get(t.callsign, (0, None))[1] if t.callsign != t.flown_cs else None
+        parts = route.split("-") if route else []
+        home = (self.args.airport, self.args.icao)
+        if len(parts) < 2 or not self.standing or (parts[0] if kind == "DEP" else parts[-1]) not in home:
+            return None
+        far = parts[-1] if kind == "DEP" else parts[0]
+        try:
+            pos = self.standing.airport(far)
+        except requests.RequestException:
+            return None
+        return (far, *pos) if pos else None
 
     def check_destination(self, t: Track, kind: str, d: float) -> None:
         """Long before landing: an arrival flying away from the airport, or a departure flying back.
@@ -2409,6 +2463,10 @@ class Monitor:
             return self.check_route_course(t)
         if s.on_ground or s.track is None or (s.alt or 0) < 5000 or d < a.off_course_min_dist:
             return
+        far = self.other_end(t, kind)
+        if far and haversine_nm(s.lat, s.lon, far[1], far[2]) < a.off_course_min_dist:
+            return  # climbing out of an arrival's origin, on approach to a departure's destination (AeroSignals
+            #         squawk replay: TO4755 out of Barcelona "heading away from ORY", AA2045 near SFO "back to PHL")
         old = t.sample_ago(a.course_hold)
         if not old or old.t < t.leg_start:
             return
@@ -3195,7 +3253,7 @@ def parse_args(argv=None):
                    help="our flight map page, linked from alerts and posts as 'Map' ('' to leave out)")
     g.add_argument("--thread-hours", type=float, default=6,
                    help="later alerts on a flight reply to its thread for this long")
-    g.add_argument("--telegram-skip", default=os.getenv("TELEGRAM_SKIP", "LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP,GPS_DEGRADED,MASS_SILENCE"),
+    g.add_argument("--telegram-skip", default=os.getenv("TELEGRAM_SKIP", "LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP,GPS_DEGRADED,MASS_SILENCE,TOWARD_ISRAEL"),
                    help="alert kinds not sent to Telegram (still in the files and ntfy), unless the "
                         "flight also has an alert of another kind ('' sends everything)")
     g.add_argument("--telegram-to", choices=("chat", "channel"), default="chat",

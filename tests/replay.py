@@ -148,6 +148,9 @@ def run(fixture: dict, argv=(), warmup: float = 300) -> tuple[list[dict], fw.Mon
                                                       "airports": fixture.get("airports", {})})
     mon.clock = mon.wall = clock
     mon.started = clock()
+    for h in meta.get("follow", []):  # followed from the start, wherever it is (as a TLV board flight)
+        t = mon.tracks.setdefault(h, fw.Track(h))
+        t.followed, t.follow_why, t.last_msg = True, "airport", clock()  # (else pruned as long unheard)
     alerts: list[dict] = []
     mon.notifier.send = alerts.append
     while clock() <= meta["end"]:

@@ -121,7 +121,7 @@ the announcement feed; `-vv` adds debug detail. Alerts are appended to `alerts.j
 (`--jsonl ''` / `--posts ''` to disable). Telegram: set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`
 (a chat with the bot), or with `--telegram-to channel` (`monitor.sh`: `SENDTO=channel`, the default there) `TELEGRAM_CHANNEL_ID` (a channel where the
 bot is an admin: `@name` or its `-100...` id; only admins can write there). `--telegram-skip`
-(`TELEGRAM_SKIP`; default `LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP,GPS_DEGRADED,MASS_SILENCE`) leaves those kinds out of Telegram;
+(`TELEGRAM_SKIP`; default `LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP,GPS_DEGRADED,MASS_SILENCE,TOWARD_ISRAEL`) leaves those kinds out of Telegram;
 it gets one `GPS_SPOOFING` start in 6 h and never an episode's end
 unless the flight also has an alert of another kind. Each message sent is also appended to
 `posts_telegram.jsonl` (`--telegram-posts`; `monitor.sh`: `posts_telegram_YYYY-MM-DD.jsonl`), `"sent": false` when Telegram refused it.
@@ -352,7 +352,7 @@ is live through the HTTPS relay named by `FB.RELAY` in `docs/flightboard.js`, wh
 or `tools/serve.py` on a server (`--host 0.0.0.0` behind an HTTPS proxy). The worker relays only
 the feed paths the pages use, for the GitHub Pages and localhost origins, with a 5-30 s cache,
 and serves its last answer of up to 2 minutes when adsb.lol answers 429. With a KV namespace
-(binding `CALLSIGNS`) and a Cron Trigger every 5 minutes it also keeps which aircraft flew each
+(binding `CALLSIGNS`; no Cron Trigger needed) it also keeps which aircraft flew each
 callsign near TLV in the last 36 hours, so the map shows the flown track of a landed flight.
 adsb.lol refuses the worker's own requests, so a GitHub workflow fills it every 10 minutes
 (`.github/workflows/share_callsigns.yml`): set one random value as the worker's secret
