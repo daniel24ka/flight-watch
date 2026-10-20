@@ -2165,6 +2165,45 @@ class FarEndTests(unittest.TestCase):
             got[route] = "DIVERSION" in kinds(alerts, "48418c")
         self.assertEqual(got, {"EHAM-LCLK-LLBG": False, "EHAM-LLBG": True})
 
+    def ramon(self):
+        mon, feed, clock, alerts = self.setup([board_row("IZ", "807", "D", local_time(Clock(), 0.5), "ETM")])
+        feed.files.update({"routes/schema-01/A/AIZ-all.csv": "Callsign,Code,Number,AirlineCode,AirportCodes\n"
+                                                              "AIZ802,AIZ,802,AIZ,LLER-LLBG\nAIZ807,AIZ,807,AIZ,LLBG-LLER\n",
+                           "airports/schema-01/L/LL.csv": ROUTE_FILES["airports/schema-01/L/LL.csv"]
+                           + "LLER,Ramon,LLER,ETM,Eilat,IL,29.7236,35.0114,288\n"})
+        return mon, feed, clock, alerts
+
+    def test_arrival_callsign_taking_off_from_tlv_is_a_departure(self):
+        """4X-AGY landed at TLV as AIZ804, became AIZ802 (LLER-LLBG) on the ground and flew to Ramon with it over
+        the Dead Sea: "TLV arrival heading 185 deg, 151 deg away from TLV" (20 Oct 2026)."""
+        got = {}
+        for seen_leaving in (True, False):
+            mon, feed, clock, alerts = self.ramon()
+            ident = dict(flight="AIZ802", r="4X-AGY", t="A320")
+            tlv = (32.0114, 34.8867)
+            if seen_leaving:
+                fly(mon, feed, clock, "738447", [dict(lat=tlv[0], lon=tlv[1], alt_baro="ground", gs=5, track=140)] * 3,
+                    **ident)
+            climb = path(*tlv, [140] * 40 + [180] * 80, [min(1500 + 400 * i, 17000) for i in range(120)], gs=300)
+            fly(mon, feed, clock, "738447", climb if seen_leaving else climb[30:], **ident)
+            got[seen_leaving] = "OFF_COURSE" in kinds(alerts, "738447")
+        self.assertEqual(got, {True: False, False: True})  # (first heard far out: nothing says it left TLV)
+
+    def test_departure_silent_descending_into_its_destination(self):
+        """IZ807 TLV -> Ramon went silent at 12,900 ft 37 nm out (coverage near Eilat): LOST_CONTACT."""
+        mon, feed, clock, alerts = self.ramon()
+        ident = dict(flight="AIZ807", r="4X-AGY", t="A320")
+        for i in range(6):  # (one of two aircraft going silent would look like a feed glitch)
+            feed.local.add(f"99999{i}")
+            feed.aircraft[f"99999{i}"] = airborne(32.5 + 0.1 * i, 34.5, 10000, flight=f"LOC{i}")
+        fly(mon, feed, clock, "738447", path(30.95, 35.10, [185] * 40, [20000 - 180 * i for i in range(40)],
+                                             gs=300), **ident)
+        feed.local.discard("738447")
+        del feed.aircraft["738447"]
+        for _ in range(30):
+            step(mon, clock)
+        self.assertNotIn("LOST_CONTACT", kinds(alerts, "738447"))
+
     def test_turn_climbing_out_of_its_origin_far_away(self):
         """ELY552 SOF -> TLV, 19 Oct 2026: "track 359 -> 126 deg" at 17,825 ft, 10 nm from Sofia."""
         tracks = [0] * 6 + [7.5 * i for i in range(1, 17)] + [126] * 16

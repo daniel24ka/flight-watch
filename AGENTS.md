@@ -362,6 +362,12 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   below 65 deg in the replay; FZ1073 reached 165 deg. A route-based OFF_COURSE is not raised while the flight descends
   (<= -500 ft/min, below FL300) toward a regional airport <= 150 nm ahead (`descending_toward`): THY6264, listed LTBA-WSSS,
   flew Istanbul - Amman on 14 Oct 2026 and alerted at FL254 descending, 90 nm from Amman.
+  An aircraft seen taking off from our airport in this leg (`Track.rose_home`, kept across a callsign change in the
+  air) is not an arrival, whatever the board or route data say of its callsign (`Monitor.arriving`; classified `DEP?`):
+  4X-AGY landed at TLV as AIZ804, became AIZ802 (route LLER-LLBG) on the ground and flew to Ramon over the Dead Sea
+  with it, "TLV arrival ... 151 deg away from TLV" (20 Oct 2026; AIZ807 26 min later). Then, as AIZ807, it went
+  silent at 12,900 ft 37 nm from Ramon (LOST_CONTACT): a departure silent while descending below 15,000 ft within
+  50 nm of its destination is logged as probably landing there.
   Neither within `--off-course-min-dist` of the far end (route data: an arrival's origin, a departure's
   destination): climbing out "away from" the destination and approach turns "back" (squawk replay: TO4755 out of
   Barcelona, AA2045 on approach to SFO "heading back to PHL, 2175 nm out").

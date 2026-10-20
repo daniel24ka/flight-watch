@@ -822,6 +822,7 @@ class Track:
     flown_cs: str = ""       # a callsign whose flight to / from our airport it has completed (end_leg)
     feed: str = ""           # the provider of its newest report
     left_home: bool = False  # seen on the ground or low at our airport in this leg (a departure, not just by route)
+    rose_home: bool = False  # seen taking off from our airport in this leg: not an arrival, whatever its callsign says
     orig_first: float = -1.0  # an arrival: nm from its origin when first heard in this leg (-1: not yet)
     orig_max: float = 0.0     # the farthest it has been from its origin in this leg (at_own_origin)
     orig_left: bool = False   # seen on the ground or climbing out within 30 nm of its origin in this leg
@@ -1784,6 +1785,11 @@ class Monitor:
 
     def classify(self, t: Track) -> tuple[str, str | None]:
         a = self.args
+        if t.rose_home and self.arriving(t):
+            # it took off from here still sending its arrival's callsign (or one listed inbound): 4X-AGY landed
+            # at TLV as AIZ804, became AIZ802 (route LLER-LLBG) on the ground and left for Ramon with it - "TLV
+            # arrival heading 185 deg, 151 deg away from TLV" over the Dead Sea (20 Oct 2026); AIZ807 26 min later
+            return "DEP?", None
         if t.sched:
             return t.sched.direction, t.sched.route(a.airport)
         route = self.routes.get(t.callsign, (0, None))[1] if t.callsign != t.flown_cs else None
@@ -1802,6 +1808,13 @@ class Monitor:
             if s.vrate > 300:
                 return "DEP?", None
         return "?", None
+
+    def arriving(self, t: Track) -> bool:
+        """Board or route data say it arrives here."""
+        if t.sched:
+            return t.sched.direction == "ARR"
+        route = self.routes.get(t.callsign, (0, None))[1] if t.callsign != t.flown_cs else None
+        return bool(route) and route.split("-")[-1] in (self.args.airport, self.args.icao)
 
     # ---- main step
     def poll(self) -> None:
@@ -1914,6 +1927,7 @@ class Monitor:
         if kind in ("DEP", "ARR") and (kind == "DEP") == (d > 15):
             t.flown_cs, t.sched = t.callsign, None  # (the board row, or the route data's direction)
         t.was_airborne, t.max_dist, t.route_dir, t.max_alt, t.left_home = False, 0.0, 0, 0, d < 15
+        t.rose_home = False
         t.orig_first, t.orig_max, t.orig_left = -1.0, 0.0, False
         if unseen:
             t.takeoff, t.leg_start = 0.0, t.last.t
@@ -1946,6 +1960,7 @@ class Monitor:
             log.info("%s is now %s: a new leg", t.label(), new)
             t.flown_cs = ""
             t.left_home = t.left_home and bool(t.last) and not t.last.on_ground  # (same flight: LOT6ME -> LOT6212)
+            t.rose_home = t.rose_home and bool(t.last) and not t.last.on_ground
             t.sched, t.route_dir, t.was_airborne, t.max_dist, t.leg_start = None, 0, False, 0.0, now
             t.max_alt, t.orig_first, t.orig_max, t.orig_left = 0, -1.0, 0.0, False
         t.callsign, t.cs_pending = new, None
@@ -2012,6 +2027,7 @@ class Monitor:
             # 18 Oct 2026, 11 EARLY_DESCENTs on arrivals descending into their destinations, "1-8 min after
             # take-off", after the API refused our polls for up to 2 h)
             t.takeoff, t.climb_peak = s.t, s.alt or 0
+            t.rose_home = d < 15
         self.check_emergency(t, ac)
         self.check_skydive(t)  # before check_vrate, so the dive's alert says what it is
         self.check_vrate(t)
@@ -3169,6 +3185,12 @@ class Monitor:
                 t.lost_alerted = False
                 log.info("%s silent %.0fs at %.4f,%.4f during %s - a fake place, not taken as a landing",
                          t.label(), silent, s.lat, s.lon, fake)
+                continue
+            dest = self.destination(t) if kind == "DEP" and descending and (s.alt or 0) < 15000 else None
+            if dest and haversine_nm(s.lat, s.lon, dest[1], dest[2]) <= 50:
+                # IZ807 TLV -> Ramon, silent at 12,900 ft 37 nm out (low coverage near Eilat, 20 Oct 2026)
+                log.info("%s silent %.0fs descending %.0f nm from its destination %s - probably landing there",
+                         t.label(), silent, haversine_nm(s.lat, s.lon, dest[1], dest[2]), dest[0])
                 continue
             if (s.alt or 0) < 12000 and descending and ad <= 30:
                 orig = self.at_own_origin(t, s) if kind == "ARR" else None
