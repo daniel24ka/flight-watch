@@ -3703,6 +3703,9 @@ def parse_args(argv=None):
     g.add_argument("--ntfy-topic", default=os.getenv("NTFY_TOPIC"), help="ntfy topic name")
     g.add_argument("--ntfy-server", default=os.getenv("NTFY_SERVER", "https://ntfy.sh"))
     g.add_argument("--log-file", help="also write the full log (as with -v) to this file")
+    g.add_argument("--lock-file", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".flight_watch.lock"),
+                   help="refuse to start while another monitor holds this file (two ran by mistake, 20 Oct 2026: "
+                        "every alert twice, and half the request budget each); '' = no check. Not with --once")
     g.add_argument("-v", "--verbose", action="count", default=0,
                    help="-v: the full log and the announcement feed; -vv: also debug detail. "
                         "Without it: the first aircraft count, then one line per alert (and errors)")
@@ -3731,8 +3734,31 @@ def parse_args(argv=None):
     return a
 
 
+def single_instance(path: str):
+    """Hold an exclusive lock on `path` while this process runs (released by the OS when it ends, also on a
+    crash); exit with an error when another monitor holds it. The open file is returned: keep it."""
+    try:
+        import fcntl
+    except ImportError:  # (not on Windows)
+        return None
+    f = open(path, "a+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.seek(0)
+        pid = f.read().strip() or "?"
+        sys.exit(f"flight_watch: another monitor is already running (pid {pid}, lock {path}). "
+                 f"Stop it first (Ctrl+C in its terminal, or kill {pid}), or pass --lock-file '' to run both.")
+    f.seek(0)
+    f.truncate()
+    f.write(f"{os.getpid()}\n")
+    f.flush()
+    return f
+
+
 def main(argv=None) -> None:
     args = parse_args(argv)
+    lock = single_instance(args.lock_file) if args.lock_file and not args.once else None  # noqa: F841 (held)
     console = {0: logging.ERROR, 1: logging.INFO}.get(args.verbose, logging.DEBUG)
     logging.basicConfig(level=min(console, logging.INFO if args.log_file else console),
                         format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")

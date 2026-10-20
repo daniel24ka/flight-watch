@@ -2310,3 +2310,14 @@ class TelegramThreadTests(unittest.TestCase):
                   force=True)
         fly(mon, feed, clock, "4d22a0", path(32.5, 33.1, [90] * 3, [30000] * 3, squawk="7700"), flight="AIZ992")
         self.assertEqual(kinds(alerts), ["EMERGENCY"])
+
+
+class SingleInstanceTests(unittest.TestCase):
+    def test_second_monitor_is_refused_until_the_first_ends(self):
+        path = os.path.join(tempfile.mkdtemp(), ".flight_watch.lock")
+        first = fw.single_instance(path)
+        with self.assertRaises(SystemExit) as e:
+            fw.single_instance(path)
+        self.assertIn(f"pid {os.getpid()}", str(e.exception.code))
+        first.close()  # (the process ending)
+        fw.single_instance(path).close()

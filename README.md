@@ -125,6 +125,8 @@ bot is an admin: `@name` or its `-100...` id; only admins can write there). `--t
 it gets one `GPS_SPOOFING` start in 6 h and never an episode's end
 unless the flight also has an alert of another kind. Each message sent is also appended to
 `posts_telegram.jsonl` (`--telegram-posts`; `monitor.sh`: `posts_telegram_YYYY-MM-DD.jsonl`), `"sent": false` when Telegram refused it.
+Only one monitor runs at a time: a second one exits with an error naming the first's pid (`--lock-file`, `.flight_watch.lock`; `--once` is not checked).
+
 A flight's later messages are replies to its first one; once it lands (or 45 min after its last message) one more
 reply sums it up: how it ended, its alerts, and a map link with the whole flight.
 
