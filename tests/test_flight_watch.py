@@ -2140,6 +2140,31 @@ class FarEndTests(unittest.TestCase):
         """QS1286 PRG -> TLV (7700) went back to Prague."""
         self.assertIn("DIVERSION", self.arrival_at_madrid(leaves=True))
 
+    def test_listed_stop_on_the_way_is_not_a_diversion(self):
+        """KLM461 AMS -> TLV is EHAM-LCLK-LLBG: it lands at Larnaca on the way and was a DIVERSION "probably
+        landing at LCA" (20 Oct 2026). The same descent with no stop listed still is one."""
+        got = {}
+        for route in ("EHAM-LCLK-LLBG", "EHAM-LLBG"):
+            mon, feed, clock, alerts = self.setup([board_row("KL", "461", "A", local_time(Clock(), 1), "AMS")])
+            feed.files.update({"routes/schema-01/K/KLM-all.csv": "Callsign,Code,Number,AirlineCode,AirportCodes\n"
+                                                                  f"KLM461,KLM,461,KLM,{route}\n",
+                               "airports/schema-01/E/EH.csv": "Code,Name,ICAO,IATA,Location,CountryISO2,Latitude,"
+                                                              "Longitude,AltitudeFeet\nEHAM,Schiphol,EHAM,AMS,"
+                                                              "Amsterdam,NL,52.3086,4.7639,-11\n"})
+            ident = dict(flight="KLM461", r="PH-BXR", t="B739")
+            start = (35.55, 33.15)
+            brg = fw.bearing(*start, 34.8751, 33.6249)
+            approach = [st for st in path(*start, [brg] * 120, [max(14000 - 150 * i, 1400) for i in range(120)],
+                                          gs=220)]
+            approach = approach[:next(i for i, st in enumerate(approach)
+                                      if fw.haversine_nm(st["lat"], st["lon"], 34.8751, 33.6249) < 5)]
+            fly(mon, feed, clock, "48418c", approach, local=False, **ident)
+            del feed.aircraft["48418c"]
+            for _ in range(60):
+                step(mon, clock)
+            got[route] = "DIVERSION" in kinds(alerts, "48418c")
+        self.assertEqual(got, {"EHAM-LCLK-LLBG": False, "EHAM-LLBG": True})
+
     def test_turn_climbing_out_of_its_origin_far_away(self):
         """ELY552 SOF -> TLV, 19 Oct 2026: "track 359 -> 126 deg" at 17,825 ft, 10 nm from Sofia."""
         tracks = [0] * 6 + [7.5 * i for i in range(1, 17)] + [126] * 16

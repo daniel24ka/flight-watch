@@ -1701,8 +1701,8 @@ class Monitor:
                 if airline_like(t):  # airline names / IATA codes for alerts: one file, first
                     self.standing.airline(cs[:3], fetch=True)
                 codes = self.standing.route(cs)
-                for icao in (codes or [])[:1] + (codes or [])[-1:]:
-                    self.standing.airport(icao)  # warm the position cache for both ends
+                for icao in codes or []:
+                    self.standing.airport(icao)  # warm the position cache for both ends and any stop
                 self.route_failures = 0
             except Throttled:
                 return  # try again next cycle
@@ -2747,6 +2747,10 @@ class Monitor:
                 log.info("%s on the ground at its origin %s, never seen leaving it: its previous flight, "
                          "not a diversion", t.label(), orig)
                 return
+            stop = self.planned_stop(t, s, kind)
+            if stop:
+                log.info("%s on the ground at %s, a stop on its route - not a diversion", t.label(), stop)
+                return
             place = self.landing_place(t, d)
             if place is not None:
                 self.alert(t, "DIVERSION", f"{self.args.airport} arrival on the ground "
@@ -2757,7 +2761,10 @@ class Monitor:
             # (seen leaving, or the board's: the route data alone gave four "PDX departures" landing at Seattle
             # in the QX2059 replay - today's routes on 2023 callsigns)
             dest = self.destination(t) if (t.sched or t.left_home) else None
-            if dest and haversine_nm(s.lat, s.lon, dest[1], dest[2]) > DIVERTED_NM:
+            stop = self.planned_stop(t, s, kind) if dest else None
+            if stop:
+                log.info("%s on the ground at %s, a stop on its route - not a diversion", t.label(), stop)
+            elif dest and haversine_nm(s.lat, s.lon, dest[1], dest[2]) > DIVERTED_NM:
                 place = self.landing_place(t, d)
                 if place is not None:
                     self.alert(t, "DIVERSION", f"{self.args.airport} departure bound for {dest[0]} on the ground "
@@ -2837,6 +2844,24 @@ class Monitor:
         if (orig and t.orig_first > 60 and not t.orig_left and t.orig_max <= t.orig_first + 20
                 and haversine_nm(s.lat, s.lon, orig[1], orig[2]) <= DIVERTED_NM):
             return orig[0]
+        return None
+
+    def planned_stop(self, t: Track, s: Sample, kind: str) -> str | None:
+        """A stop on the way listed in its route (ICAO) within DIVERTED_NM, when the route's far end is the one
+        `other_end` takes (board or route data, agreeing). KLM461 is EHAM-LCLK-LLBG: it lands at Larnaca on the
+        way to TLV and was a DIVERSION "probably landing at LCA" (20 Oct 2026)."""
+        route = self.routes.get(t.callsign, (0, None))[1] if t.callsign != t.flown_cs else None
+        parts = route.split("-") if route else []
+        far = self.other_end(t, kind) if len(parts) >= 3 else None
+        if not far or far[0] != (parts[0] if kind == "ARR" else parts[-1]):
+            return None
+        for icao in parts[1:-1]:
+            try:
+                pos = self.standing.airport(icao)
+            except requests.RequestException:
+                pos = None
+            if pos and haversine_nm(s.lat, s.lon, *pos) <= DIVERTED_NM:
+                return icao
         return None
 
     def own_airport_near(self, t: Track, s: Sample, nm: float) -> str | None:
@@ -3097,6 +3122,11 @@ class Monitor:
                         log.info("%s silent low near its origin %s, never seen leaving it: its previous flight "
                                  "landing there, not a diversion", t.label(), orig)
                         continue
+                    stop = self.planned_stop(t, s, kind)
+                    if stop:
+                        t.lost_alerted = False
+                        log.info("%s silent low near %s, a stop on its route - not a diversion", t.label(), stop)
+                        continue
                     fake = self.fake_place(t, s)
                     if fake:
                         t.lost_alerted = False
@@ -3142,9 +3172,13 @@ class Monitor:
                 continue
             if (s.alt or 0) < 12000 and descending and ad <= 30:
                 orig = self.at_own_origin(t, s) if kind == "ARR" else None
+                stop = self.planned_stop(t, s, kind) if kind == "ARR" else None
                 if orig:
                     log.info("%s silent %.0fs descending near its origin %s, never seen leaving it: its previous "
                              "flight landing there, not a diversion", t.label(), silent, orig)
+                elif stop:
+                    log.info("%s silent %.0fs descending near %s, a stop on its route - not a diversion",
+                             t.label(), silent, stop)
                 elif kind == "ARR":  # a TLV arrival descending into another airport
                     t.lost_alerted = True
                     self.alert(t, "DIVERSION", f"{a.airport} arrival went silent {silent:.0f}s, "

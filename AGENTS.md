@@ -241,6 +241,10 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   farther, and never on the ground or climbing near it (`at_own_origin`; 9A-BTH changed ISR193 -> ISR182 in the air and "went
   silent probably landing elsewhere" on approach to Madrid, 19 Oct 2026). Squawk replay: the real returns (SWA512 to Honolulu,
   LAN454 to Buenos Aires, first heard 46 nm out with its departure unseen) still alert.
+  A landing within `DIVERTED_NM` of a stop listed in the route data (`planned_stop`: an airport between the ends,
+  when the route's far end agrees with the board) is logged, not a DIVERSION: KLM461 AMS -> TLV is EHAM-LCLK-LLBG
+  and "went silent ... probably landing at LCA" (20 Oct 2026). 113 routes through TLV list stops (crowd-sourced,
+  some stale); cost: a real diversion to a listed stop is only logged.
   A landing elsewhere must be believable (13 Oct 2026; all 4 DIVERSIONs of the run of 11-12 Oct were
   arrivals on approach to TLV with spoofed GPS - ETD3QF, AIZ282, ISR972, ELY5462): "on the ground" within
   `LANDING_AIRPORT_NM` (5) of an airport of the local `standing-data/` checkout (`StandingData.airfield_near`;
