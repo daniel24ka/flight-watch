@@ -487,7 +487,13 @@ skipped too (18 Oct 2026: 9 of 66 messages, nothing to see on a map, mostly whil
 TOWARD_ISRAEL (19 Oct 2026, the owner's wish; still checked, logged and in the files).
 `--telegram-to chat|channel` picks `TELEGRAM_CHAT_ID` (default) or `TELEGRAM_CHANNEL_ID` (the public, read-only
 channel); `monitor.sh` sets it from `SENDTO` (channel).
-Each message is also appended to `--telegram-posts` (`posts_telegram.jsonl`, with `sent`), apart from `posts.jsonl`.
+Each message is also appended to `--telegram-posts` (`posts_telegram.jsonl`, with `sent`), apart from `posts.jsonl`. **Threads** (20 Oct 2026, IZ992 JFK -> TLV, 7700: three
+messages in two minutes, each map showing only the track flown by then; the owner: post early, then integrate): a flight's
+later messages reply to its first (`Notifier.tg_threads`, rebuilt from `--telegram-posts` at start: `message_id`, `reply_to`),
+and `Monitor.telegram_followups` sends one reply, `FOLLOW_UP`, when it lands or `TG_FOLLOWUP_S` (45 min) after its last
+message - for a flight with 2+ messages or an emergency / diversion / return: where it ended (or is), its alerts with times,
+and the map of the whole flight (`t` = its last report). The same squawk alerted within 3 h is not alerted again (AeroSignals'
+post, then our feed's 7700), and an AeroSignals EMERGENCY on an aircraft last heard before the post is placed at the post's time.
 
 **AeroSignals as a second source of squawks** (19 Oct 2026, the owner: "so we won't miss a squawk"). OS82 TLV -> VIE squawked
 7700 on 18 Oct over Bulgaria and diverted to Sofia while adsb.lol refused nearly every poll: nothing alerted. The monitor reads

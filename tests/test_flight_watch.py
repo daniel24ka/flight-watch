@@ -2220,3 +2220,68 @@ class AeroSignalsTests(unittest.TestCase):
             step(mon, clock)
         self.assertEqual((posts, kinds(alerts)), ([], []))
         self.assertEqual(mon.aero_pending, {})
+
+
+class TelegramThreadTests(unittest.TestCase):
+    """A flight's Telegram messages form one thread, closed by a follow-up with the map of the whole flight
+    (IZ992, 20 Oct 2026: three messages, each map with the track flown by then)."""
+
+    class Sent:
+        def __init__(self):
+            self.calls = []
+
+        def post(self, url, **kw):
+            self.calls.append(kw["json"])
+            return mock.Mock(json=lambda: {"ok": True, "result": {"message_id": len(self.calls)}})
+
+    def notifier(self, saved):
+        args = fw.parse_args(["--jsonl", "", "--posts", "", "--turn-zones", "", "--telegram-posts", saved,
+                              "--telegram-skip", "LOST_CONTACT"])
+        http = self.Sent()
+        with mock.patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "@c"}):
+            n = fw.Notifier(args, http, fw.Announcer(args, out=lambda text: None), console=lambda text: None)
+        return n, http
+
+    def test_later_messages_reply_to_the_first_and_a_restart_keeps_the_thread(self):
+        saved = os.path.join(tempfile.mkdtemp(), "posts_telegram.jsonl")
+        n, http = self.notifier(saved)
+        kw = dict(remote=False, traffic="ARR", route=None)
+        n.send(alert_rec("EMERGENCY", "squawk 7700 (GENERAL EMERGENCY)", **kw))
+        n.send(alert_rec("OFF_COURSE", "TLV arrival heading 104 deg, 169 deg away from TLV", minute=2, **kw))
+        self.assertNotIn("reply_parameters", http.calls[0])
+        self.assertEqual(http.calls[1]["reply_parameters"]["message_id"], 1)
+        again, _ = self.notifier(saved)
+        self.assertEqual((again.tg_threads["8965d1"]["id"], again.tg_threads["8965d1"]["n"]), (1, 2))
+        n.follow_up("8965d1", 0, [{"text": "Update"}])
+        n.follow_up("8965d1", 0, [{"text": "Update"}])
+        self.assertEqual(len(http.calls), 3)
+        self.assertEqual(http.calls[2]["reply_parameters"]["message_id"], 1)
+        self.assertTrue(self.notifier(saved)[0].tg_threads["8965d1"]["done"])
+
+    def test_follow_up_after_the_last_message_with_the_whole_flight(self):
+        mon, feed, clock, alerts = make(["--viewer-url", "https://x/flight_map.html"])
+        ups = []
+        mon.notifier.follow_up = lambda h, when, seg: ups.append((h, when, seg))
+        fly(mon, feed, clock, "4d22a0", path(32.5, 33.0, [90] * 3, [30000] * 3, squawk="7700"), flight="AIZ992")
+        self.assertEqual(kinds(alerts), ["EMERGENCY"])
+        mon.notifier.tg_threads["4d22a0"] = {"id": 7, "t": clock(), "last": clock(), "n": 1}
+        fly(mon, feed, clock, "4d22a0", path(32.5, 33.2, [90] * 60, [30000] * 60, squawk="7700"), flight="AIZ992")
+        self.assertEqual(ups, [])  # 10 min: not yet
+        for _ in range(240):  # 40 min more
+            step(mon, clock)
+        self.assertEqual(len(ups), 1)
+        text = "".join(s.get("text") or s["link"] for s in ups[0][2])
+        self.assertIn("Update: ", text)
+        self.assertIn("emergency", text)
+        self.assertIn("Map of the flight", text)
+        url = next(s["url"] for s in ups[0][2] if s.get("link") == "Map of the flight")
+        self.assertIn("a=EMERGENCY~", url)
+
+    def test_aerosignals_then_our_feed_is_one_emergency(self):
+        mon, feed, clock, alerts = make()
+        fly(mon, feed, clock, "4d22a0", path(32.5, 33.0, [90] * 3, [30000] * 3), flight="AIZ992")
+        t = mon.tracks["4d22a0"]
+        mon.alert(t, "EMERGENCY", "squawk 7700 (GENERAL EMERGENCY) reported by AeroSignals", key="EMERGENCY:7700",
+                  force=True)
+        fly(mon, feed, clock, "4d22a0", path(32.5, 33.1, [90] * 3, [30000] * 3, squawk="7700"), flight="AIZ992")
+        self.assertEqual(kinds(alerts), ["EMERGENCY"])

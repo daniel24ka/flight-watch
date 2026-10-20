@@ -211,6 +211,10 @@ AEROSIGNALS_ACTOR = "spotterintel.bsky.social"
 AERO_MAX_AGE_S = 3 * 3600  # older posts (after a restart or an outage) are not announced
 AERO_FIND_S = 600          # look this long for the aircraft in the feeds, then announce the post without it
 ISRAEL_IATA = {"TLV", "HFA", "ETM", "VDA", "SDV", "EIL"}
+# Telegram follow-up of a flight's messages (Monitor.telegram_followups): when it lands, else this long after its
+# last message - for a flight with several messages, or an emergency / diversion / return
+TG_FOLLOWUP_S = 45 * 60
+FOLLOWUP_KINDS = {"EMERGENCY", "DIVERSION", "RETURNED", "SKYDIVE_PATTERN"}
 # common jump aircraft (ICAO type -> model, for the alert text)
 JUMP_PLANES = {
     "P750": "PAC 750XL", "C208": "Cessna 208 Caravan", "PC6P": "Pilatus PC-6 Porter",
@@ -1266,6 +1270,11 @@ class Notifier:
         self.tg_chat = os.getenv(self.tg_var)
         self.tg_skip = {k.strip().upper() for k in args.telegram_skip.split(",") if k.strip()}
         self.tg_spoof_t = -1e12  # data time of the last GPS_SPOOFING sent to Telegram
+        # hex -> its Telegram thread: {"id": first message's id, "t": its data time, "last": the last message's,
+        # "done": the follow-up was sent}. Later messages on the flight reply to the first; the monitor's
+        # follow-up (Monitor.telegram_followups) sums them up with the whole flight's map (IZ992, 20 Oct 2026: 7700,
+        # off course and lost contact in three messages, each map with only the track flown so far)
+        self.tg_threads: dict[str, dict] = self.past_threads()
 
     LINK_NAMES = {"map": "Map (flight-watch)", "fr24_flight": "FR24 flight", "fr24_aircraft": "FR24 aircraft",
                   "live_adsbx": "Live (ADSBx)", "live": "Live (airplanes.live)",
@@ -1292,16 +1301,84 @@ class Notifier:
                                 "Priority": str(rec["priority"]), "Tags": "airplane",
                                 "Click": main, "Actions": actions})
         if self.tg_token and self.tg_chat and self.telegram_wanted(rec):
-            segments = self.announcer.compose(rec, reply=False)
-            sent = self._post(f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
-                              json={"chat_id": self.tg_chat, "text": self.telegram_text(segments),
-                                    "parse_mode": "HTML", "disable_web_page_preview": True})
-            if self.args.telegram_posts:  # exactly what went to Telegram, one line per message
-                post = {"time": rec["time"], "kind": rec["kind"], "priority": rec["priority"],
-                        "hex": rec["hex"], "sent": sent, "segments": segments,
-                        "text": "".join(s.get("text") or s["link"] for s in segments)}
-                with open(self.args.telegram_posts, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(post, ensure_ascii=False) + "\n")
+            t = datetime.fromisoformat(rec["time"].replace("Z", "+00:00")).timestamp()
+            thread = self.tg_threads.get(rec["hex"])
+            if thread and t - thread["last"] > self.args.thread_hours * 3600:
+                thread = None
+            segments = self.announcer.compose(rec, reply=bool(thread))
+            mid = self.telegram(segments, thread["id"] if thread else None)
+            if mid and mid > 0 and not thread:
+                self.tg_threads[rec["hex"]] = thread = {"id": mid, "t": t, "last": t, "n": 0}
+            if thread:
+                thread["last"], thread["done"] = max(thread["last"], t), False
+                thread["n"] = thread.get("n", 0) + 1
+            self.log_telegram(rec["time"], rec["kind"], rec["priority"], rec["hex"], mid, segments,
+                              thread["id"] if thread and thread["id"] != mid else None)
+
+    def telegram(self, segments: list, reply_to: int | None = None) -> int | None:
+        """Send one message (a reply to `reply_to`); its message_id, or None when it failed."""
+        body = {"chat_id": self.tg_chat, "text": self.telegram_text(segments), "parse_mode": "HTML",
+                "disable_web_page_preview": True}
+        if reply_to:  # (the first message deleted: sent anyway, not as a reply)
+            body["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
+        try:
+            r = self.http.post(f"https://api.telegram.org/bot{self.tg_token}/sendMessage", json=body)
+        except requests.RequestException as e:
+            log.error("notification failed (api.telegram.org): %s", e)
+            return None
+        try:
+            return int(r.json()["result"]["message_id"])
+        except (AttributeError, ValueError, KeyError, TypeError):
+            return -1  # sent, without its id: no thread
+
+    def log_telegram(self, when: str, kind: str, priority: int, hexid: str | None, mid: int | None, segments: list,
+                     reply_to: int | None = None) -> None:
+        """--telegram-posts: exactly what went to Telegram, one line per message."""
+        if self.args.telegram_posts:
+            post = {"time": when, "kind": kind, "priority": priority, "hex": hexid, "sent": bool(mid),
+                    "message_id": mid if mid and mid > 0 else None, "reply_to": reply_to, "segments": segments,
+                    "text": "".join(s.get("text") or s["link"] for s in segments)}
+            with open(self.args.telegram_posts, "a", encoding="utf-8") as f:
+                f.write(json.dumps(post, ensure_ascii=False) + "\n")
+
+    def past_threads(self) -> dict:
+        """The Telegram threads in --telegram-posts (a restart replies to them, and does not repeat a follow-up)."""
+        out = {}
+        try:
+            with open(self.args.telegram_posts, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        p = json.loads(line)
+                        t = datetime.fromisoformat(p["time"].replace("Z", "+00:00")).timestamp()
+                    except (ValueError, KeyError):
+                        continue
+                    h = p.get("hex")
+                    if not h or not p.get("message_id") and p.get("kind") != "FOLLOW_UP":
+                        continue
+                    th = out.get(h)
+                    if p.get("kind") == "FOLLOW_UP":
+                        if th:
+                            th["done"] = True
+                    elif th and p.get("reply_to") == th["id"]:
+                        th["last"], th["done"], th["n"] = max(th["last"], t), False, th["n"] + 1
+                    elif not p.get("reply_to"):
+                        out[h] = {"id": p["message_id"], "t": t, "last": t, "n": 1}
+        except (OSError, TypeError):
+            pass  # no file yet, or ''
+        return out
+
+    def follow_up(self, hexid: str, when: float, segments: list) -> None:
+        """The flight's follow-up, as a reply to its first Telegram message (Monitor.telegram_followups)."""
+        thread = self.tg_threads.get(hexid)
+        if not thread or thread.get("done"):
+            return
+        thread["done"] = True
+        text = "".join(s.get("text") or s["link"] for s in segments)
+        log.info("[FOLLOW_UP] %s", text.replace("\n", " "))
+        self.console(text.split("\n")[0])
+        mid = self.telegram(segments, thread["id"]) if self.tg_token and self.tg_chat else None
+        self.log_telegram(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(when)), "FOLLOW_UP", 3, hexid, mid,
+                          segments, thread["id"])
 
     def send_post(self, c: dict) -> None:
         """An AeroSignals squawk post whose aircraft is not in our feeds (Monitor.aero_alerts): the log, the
@@ -1317,15 +1394,9 @@ class Notifier:
         log.info("[EMERGENCY] (AeroSignals) %s| %s", text.strip(), c["url"])
         self.console(text.strip())
         if self.tg_token and self.tg_chat:
-            sent = self._post(f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
-                              json={"chat_id": self.tg_chat, "text": self.telegram_text(segments),
-                                    "parse_mode": "HTML", "disable_web_page_preview": True})
-            if self.args.telegram_posts:
-                post = {"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(c["t"])), "kind": "EMERGENCY",
-                        "priority": 5, "hex": None, "sent": sent, "segments": segments,
-                        "text": "".join(x.get("text") or x["link"] for x in segments)}
-                with open(self.args.telegram_posts, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(post, ensure_ascii=False) + "\n")
+            mid = self.telegram(segments)
+            self.log_telegram(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(c["t"])), "EMERGENCY", 5, None, mid,
+                              segments)
 
     def telegram_wanted(self, rec: dict) -> bool:
         """--telegram-skip kinds are left out, unless the flight also did something not skipped
@@ -1810,6 +1881,7 @@ class Monitor:
         for t, prev, ac, spoofed in updated:
             self.check_track(t, prev, ac, spoofed, server_now)
         self.aero_alerts()
+        self.telegram_followups(server_now)
 
         # Don't declare mass "lost contact" after a feed glitch; after our own outage, see check_lost.
         feed_ok = not (self.last_count > 10 and len(local) < 0.5 * self.last_count)
@@ -2128,7 +2200,12 @@ class Monitor:
         em = ac.get("emergency")
         changed, t.squawk = sq != t.squawk, sq or t.squawk
         if sq in EMERGENCY_SQUAWKS:
-            if changed:  # alert when the code is set or changes, not every cooldown
+            at = t.alerted.get(f"EMERGENCY:{sq}", (-1e12,))[0]
+            if changed and t.last and t.last.t - at <= AERO_MAX_AGE_S:
+                # the same emergency, alerted already (AeroSignals' post before our feed had the code: IZ992,
+                # 20 Oct 2026, 05:24 from the post and again at 05:47 when our follow request saw 7700)
+                log.info("%s squawk %s - alerted already at %s", t.label(), sq, time.strftime("%H:%M:%S", time.gmtime(at)))
+            elif changed:  # alert when the code is set or changes, not every cooldown
                 self.alert(t, "EMERGENCY", f"squawk {sq} ({EMERGENCY_SQUAWKS[sq]})",
                            key=f"EMERGENCY:{sq}", force=True)
         elif em and em != "none":
@@ -2487,9 +2564,12 @@ class Monitor:
                          for k, (at, _) in t.alerted.items()) or told:
                 log.info("AeroSignals: squawk %s on %s - our own EMERGENCY alert was sent already", sq, c["flight"])
             elif t:
+                # at the post's time when our last report of it is older (IZ992: heard last an hour before, over
+                # the Atlantic): the map link then shows the flight around the squawk, not an hour before it
+                at = t.last if t.last.t >= c["t"] else Sample(**{**t.last.__dict__, "t": c["t"]})
                 self.alert(t, "EMERGENCY", f"squawk {sq} ({EMERGENCY_SQUAWKS[sq]}) reported by AeroSignals at "
                            f"{time.strftime('%H:%M', time.gmtime(c['t']))} UTC, {c['url']} - not seen in our feed's "
-                           f"reports", key=f"EMERGENCY:{sq}", force=True)
+                           f"reports", key=f"EMERGENCY:{sq}", force=True, sample=at)
             elif self.wall() - c["t"] > AERO_FIND_S:
                 log.warning("AeroSignals: squawk %s on %s - the aircraft is not in our feeds (%s)", sq, c["flight"],
                             ",".join(c["callsigns"]) or "no callsign")
@@ -2498,6 +2578,56 @@ class Monitor:
                 continue
             del self.aero_pending[uri]
             self.aero_seen.add(c["pid"])
+
+    def telegram_followups(self, now: float) -> None:
+        """One follow-up per Telegram thread (Notifier.tg_threads), as a reply to its first message: how the flight
+        ended or where it is, its alerts, and the map of the whole flight (the map of each message showed only the
+        track flown by then). Sent when it lands, else TG_FOLLOWUP_S after the thread's last message; only for a
+        flight with several messages or an emergency / diversion / return (FOLLOWUP_KINDS)."""
+        n = self.notifier
+        for hexid, th in list(n.tg_threads.items()):
+            if th.get("done"):
+                continue
+            t = self.tracks.get(hexid)
+            if t is None or t.last is None:
+                if now - th["last"] > 2 * TG_FOLLOWUP_S:
+                    th["done"] = True  # forgotten (out of our feeds for hours): nothing to add
+                continue
+            s = t.last
+            sent = [(k, x) for k, x in t.sent if x >= th["t"] - 60]
+            if not (th.get("n", 1) >= 2 or any(k in FOLLOWUP_KINDS for k, _ in sent)):
+                if now - th["last"] > TG_FOLLOWUP_S:
+                    th["done"] = True
+                continue
+            landed = s.on_ground and (s.gs is None or s.gs < 50) and s.t - th["last"] >= 120
+            if not landed and now - th["last"] < TG_FOLLOWUP_S:
+                continue
+            tz = ZoneInfo("Asia/Jerusalem")
+            hm = lambda x: datetime.fromtimestamp(x, tz).strftime("%H:%M")  # noqa: E731
+            if landed:
+                field = self.standing.airfield_near(s.lat, s.lon) if self.standing else None
+                apt, ad = (field if field and field[1] <= LANDING_AIRPORT_NM else nearest_airport(s.lat, s.lon))
+                if field and field[1] <= LANDING_AIRPORT_NM:
+                    apt = " ".join(x for x in (self.standing.airport_info(apt) or ()) if x) or apt
+                outcome = f"on the ground {'at ' + apt if ad <= LANDING_AIRPORT_NM else f'{self.dist(s):.0f} nm from {self.args.airport}'} {hm(s.t)}"
+            elif t.lost or now - s.t > self.args.lost_after_remote:
+                level = f"FL{s.alt // 100:03d}" if (s.alt or 0) >= 10000 else f"{s.alt} ft"
+                outcome = f"last heard {hm(s.t)} at {level}, {self.dist(s):.0f} nm from {self.args.airport}"
+            else:
+                level = f"FL{s.alt // 100:03d}" if (s.alt or 0) >= 10000 else f"{s.alt} ft"
+                outcome = f"flying at {level} {hm(s.t)}, {self.dist(s):.0f} nm from {self.args.airport}"
+            names = ", ".join(f"{Announcer.NAMES.get(k, k.lower())} {hm(x)}" for k, x in sent)
+            links = external_links(t, s.t, self.args.viewer_url)
+            ident = self.flight_number(t) or t.callsign or hexid.upper()
+            route = self.route_text(t, *self.classify(t))
+            segments = [{"text": f"\U0001f9fe Update: {ident}{' ' + route if route else ''} - {outcome}. "
+                                 f"Alerts: {names or '-'}.\n"}]
+            for i, (label, key) in enumerate((("Map of the flight", "map"), ("Replay", "replay_adsbx"),
+                                              ("FR24", "fr24_flight"))):
+                if links.get(key):
+                    segments += ([{"text": " \u00b7 "}] if i else []) + [{"link": label, "url": links[key]}]
+            n.follow_up(hexid, s.t, segments)
+            th["done"] = True
 
     def skydive_note(self, t: Track, now: float) -> str:
         """' [skydiving pattern: ...]' for alerts within 30 min of a lift, else ''."""
