@@ -1964,6 +1964,33 @@ class Run18OctTests(unittest.TestCase):
         self.assertEqual(kinds(alerts), ["VERTICAL_RATE"])
         self.assertIn("no further alerts on it", alerts[0]["message"])
 
+    def test_large_military_alerts_once_and_follows_up_when_it_goes_silent(self):
+        """IAM4188 (Italian Air Force AT76) patrolling west of Israel: 7 alerts in 70 min (20 Oct 2026)."""
+        mon, feed, clock, alerts = make(["--no-routes"])
+        ups = []
+        mon.notifier.follow_up = lambda h, when, seg: ups.append(seg)
+        feed.local = {f"99999{i}" for i in range(6)}  # (one of two aircraft going silent: a feed glitch)
+        for i in range(6):
+            feed.aircraft[f"99999{i}"] = airborne(32.5 + 0.1 * i, 34.5, 10000, flight=f"LOC{i}")
+        ident = dict(flight="IAM4188", r="MM62298", t="AT76", dbFlags=1)
+        lap = [85] * 30 + [266] * 30  # (out and back on the same line: a reversal each way, 10 min a lap)
+        fly(mon, feed, clock, "33fdd0", path(32.6, 33.2, lap * 4, [15000] * 240, gs=250), **ident)
+        at = fw.datetime.fromisoformat(alerts[0]["time"].replace("Z", "+00:00")).timestamp()
+        mon.notifier.tg_threads["33fdd0"] = {"id": 3, "t": at, "last": at, "n": 1}
+        self.assertEqual(kinds(alerts), ["COURSE_CHANGE"])
+        self.assertEqual(ups, [])
+        feed.local.discard("33fdd0")
+        del feed.aircraft["33fdd0"]
+        for _ in range(80):
+            step(mon, clock)
+        self.assertEqual(kinds(alerts), ["COURSE_CHANGE"])
+        self.assertEqual(len(ups), 1)
+        text = "".join(x.get("text") or x["link"] for x in ups[0])
+        self.assertIn("last heard", text)
+        self.assertIn("not alerted (military", text)
+        self.assertIn("Alerts: course reversal ", text)
+        self.assertRegex(text, r"then not alerted \(military, [0-9:]+-[0-9:]+\): course reversal x[2-9]")
+
 
 class SecondFeedTests(unittest.TestCase):
     """--fallback-provider (adsb.fi): the local circle when adsb.lol does not answer (18 Oct 2026: ~110 of
@@ -2164,6 +2191,30 @@ class FarEndTests(unittest.TestCase):
                 step(mon, clock)
             got[route] = "DIVERSION" in kinds(alerts, "48418c")
         self.assertEqual(got, {"EHAM-LCLK-LLBG": False, "EHAM-LLBG": True})
+
+    def test_board_origin_before_the_routes_leg_is_a_stop(self):
+        """BZ131 BGY -> TLV (board), BBG131 LIRF-LLBG: a tag flight via Rome, two DIVERSIONs on landing there."""
+        got = {}
+        for origin in ("LIRF", "LIME"):
+            mon, feed, clock, alerts = self.setup([board_row("BZ", "131", "A", local_time(Clock(), 2), "BGY")])
+            feed.files.update({"routes/schema-01/B/BBG-all.csv": "Callsign,Code,Number,AirlineCode,AirportCodes\n"
+                                                                  f"BBG131,BBG,131,BBG,{origin}-LLBG\n",
+                               "airports/schema-01/L/LI.csv": "Code,Name,ICAO,IATA,Location,CountryISO2,Latitude,"
+                                                              "Longitude,AltitudeFeet\nLIRF,Fiumicino,LIRF,FCO,Rome,IT,"
+                                                              "41.8003,12.2389,13\nLIME,Orio al Serio,LIME,BGY,"
+                                                              "Bergamo,IT,45.6739,9.7042,782\n"})
+            mon.standing.airport("LIME")
+            ident = dict(flight="BBG131", r="9H-SHO", t="B738")
+            start = (42.6, 11.0)
+            brg = fw.bearing(*start, 41.8003, 12.2389)
+            approach = path(*start, [brg] * 120, [max(14000 - 150 * i, 1400) for i in range(120)], gs=220)
+            approach = approach[:next(i for i, st in enumerate(approach)
+                                      if fw.haversine_nm(st["lat"], st["lon"], 41.8003, 12.2389) < 5)]
+            fly(mon, feed, clock, "4d21e6", approach, local=False, **ident)
+            fly(mon, feed, clock, "4d21e6", [dict(lat=41.8003, lon=12.2389, alt_baro="ground", gs=10, track=90)] * 4,
+                local=False, **ident)
+            got[origin] = "DIVERSION" in kinds(alerts, "4d21e6")
+        self.assertEqual(got, {"LIRF": False, "LIME": True})
 
     def ramon(self):
         mon, feed, clock, alerts = self.setup([board_row("IZ", "807", "D", local_time(Clock(), 0.5), "ETM")])

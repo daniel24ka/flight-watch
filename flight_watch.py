@@ -40,6 +40,7 @@ import re
 import signal
 import sys
 import time
+import collections
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -182,7 +183,7 @@ PERSISTING = {"TOWARD_ISRAEL", "OFF_COURSE", "TURNING_BACK"}
 # no other anomaly) is only logged: survey / patrol lines. 14 Oct 2026: G-FPLD (CLB230, BE20) and 4X-CVH
 # (BDK09, G280) flew back and forth for hours west of Israel: 12 of 13 COURSE_CHANGEs, 3 of 4 SHARP_TURNs.
 TURN_KINDS, PATTERN_S = {"COURSE_CHANGE", "SHARP_TURN"}, 7200
-MILITARY_QUIET_S = 7200  # a military aircraft that is not large: one alert, then quiet (Monitor.alert)
+MILITARY_QUIET_S = 7200  # a military aircraft: one alert, then quiet (Monitor.alert), a follow-up when it ends
 # GPS spoofing (Monitor.spoofed): an aircraft reported motionless at altitude is spoofed unless it
 # climbs / descends at least this fast (a stall or spin falls 10,000+ ft/min) - then it is checked.
 SPOOF_MAX_RATE = 6000
@@ -427,10 +428,10 @@ def map_alerts(alerts, t: float) -> str:
     return ".".join(f"{k}~{round(x - t)}" for k, x in alerts)
 
 
-def external_links(t: "Track", when: float, viewer: str = "", kind: str = "") -> dict:
+def external_links(t: "Track", when: float, viewer: str = "", kind: str = "", extra=()) -> dict:
     """Links to the flight on existing sites (nothing is stored locally), and to our map page
     (docs/flight_map.html) when `viewer` is its address (`kind`: this alert's, listed in `a=` with the
-    flight's earlier ones)."""
+    flight's earlier ones; `extra`: more (kind, time) to draw - a military flight's alerts held back)."""
     day = time.strftime("%Y-%m-%d", time.gmtime(when))
     links = {}
     if viewer:
@@ -438,7 +439,8 @@ def external_links(t: "Track", when: float, viewer: str = "", kind: str = "") ->
         if t.sched:  # the page then shows the board's data too
             q.update(f=t.sched.flight, d=t.sched.direction[0])
         q["t"] = int(when)  # the page shows the flight of this moment: live, or its replay once it ended
-        shown = [(k, x) for k, x in t.sent if when - x <= MAP_ALERTS_S] + ([(kind, when)] if kind else [])
+        shown = sorted([(k, x) for k, x in [*t.sent, *extra] if when - x <= MAP_ALERTS_S], key=lambda a: a[1]) + (
+            [(kind, when)] if kind else [])
         if shown:  # this alert and the flight's earlier ones, drawn on the map
             q["a"] = map_alerts(shown[-MAP_ALERTS:], when)
         links["map"] = viewer + "?" + urlencode(q, safe="~")
@@ -815,7 +817,8 @@ class Track:
     leg_start: float = 0.0   # data time its callsign last changed: course checks use only what came after
     nic_bad: Sample | None = None  # its last NIC-0 report dropped as out of reach (see integrity)
     amm_dep: float = 0.0     # data time it was last on the ground at Amman / first heard climbing out of it
-    mil_quiet: float = 0.0   # military, not large: data time of its last alert or suppressed one (alert())
+    mil_quiet: float = 0.0   # military: data time of its last alert or suppressed one (alert())
+    mil_held: list = field(default_factory=list)  # military: (kind, data time) of the alerts it did not get
     amm_near: float = 0.0    # data time since which it has stayed within AMM_LOCAL_NM of Amman
     takeoff: float = 0.0     # data time of its take-off (left the ground, or first heard climbing low)
     climb_peak: int = 0      # highest altitude since take-off held on two reports in a row (EARLY_DESCENT)
@@ -1175,7 +1178,7 @@ class Announcer:
              "VERTICAL_RATE": "steep climb/descent", "SHARP_TURN": "sharp turn",
              "COURSE_CHANGE": "course reversal", "HOLDING": "long holding", "POSITION_JUMP": "position jump",
              "SKYDIVE_PATTERN": "skydiving pattern", "ALTITUDE_WOBBLE": "altitude up and down",
-             "EARLY_DESCENT": "early descent"}
+             "EARLY_DESCENT": "early descent", "CONTACT_RESTORED": "contact restored"}
     DETAILS = {  # kind -> (pattern in the alert message, compact wording)
         "LOST_CONTACT": (r"silent (\d+)s.*?track (\S+) deg", "silent {0} s, last track {1}°"),
         "VERTICAL_RATE": (r"([+-]\d+) ft/min, (-?[\d.]+) deg", "{0} ft/min ({1}°)"),
@@ -2611,12 +2614,16 @@ class Monitor:
                 continue
             s = t.last
             sent = [(k, x) for k, x in t.sent if x >= th["t"] - 60]
-            if not (th.get("n", 1) >= 2 or any(k in FOLLOWUP_KINDS for k, _ in sent)):
+            held = [(k, x) for k, x in t.mil_held if x >= th["t"] - 60]
+            landed = s.on_ground and (s.gs is None or s.gs < 50) and s.t - th["last"] >= 120
+            if t.military:  # (one alert, then quiet: the follow-up says how it ended, not how it goes on)
+                if not landed and now - s.t < self.args.lost_after_remote:
+                    continue
+            elif not (th.get("n", 1) >= 2 or any(k in FOLLOWUP_KINDS for k, _ in sent)):
                 if now - th["last"] > TG_FOLLOWUP_S:
                     th["done"] = True
                 continue
-            landed = s.on_ground and (s.gs is None or s.gs < 50) and s.t - th["last"] >= 120
-            if not landed and now - th["last"] < TG_FOLLOWUP_S:
+            elif not landed and now - th["last"] < TG_FOLLOWUP_S:
                 continue
             tz = ZoneInfo("Asia/Jerusalem")
             hm = lambda x: datetime.fromtimestamp(x, tz).strftime("%H:%M")  # noqa: E731
@@ -2633,7 +2640,11 @@ class Monitor:
                 level = f"FL{s.alt // 100:03d}" if (s.alt or 0) >= 10000 else f"{s.alt} ft"
                 outcome = f"flying at {level} {hm(s.t)}, {self.dist(s):.0f} nm from {self.args.airport}"
             names = ", ".join(f"{Announcer.NAMES.get(k, k.lower())} {hm(x)}" for k, x in sent)
-            links = external_links(t, s.t, self.args.viewer_url)
+            if held:
+                counts = collections.Counter(Announcer.NAMES.get(k.split(":")[0], k.lower()) for k, _ in held)
+                names += (f"{'; then' if names else ''} not alerted (military, {hm(held[0][1])}-{hm(held[-1][1])}): "
+                          + ", ".join(f"{k}{f' x{c}' if c > 1 else ''}" for k, c in counts.items()))
+            links = external_links(t, s.t, self.args.viewer_url, extra=[(k.split(":")[0], x) for k, x in held])
             ident = self.flight_number(t) or t.callsign or hexid.upper()
             route = self.route_text(t, *self.classify(t))
             segments = [{"text": f"\U0001f9fe Update: {ident}{' ' + route if route else ''} - {outcome}. "
@@ -2868,10 +2879,18 @@ class Monitor:
         way to TLV and was a DIVERSION "probably landing at LCA" (20 Oct 2026)."""
         route = self.routes.get(t.callsign, (0, None))[1] if t.callsign != t.flown_cs else None
         parts = route.split("-") if route else []
-        far = self.other_end(t, kind) if len(parts) >= 3 else None
-        if not far or far[0] != (parts[0] if kind == "ARR" else parts[-1]):
+        home = (self.args.airport, self.args.icao)
+        far = self.other_end(t, kind) if len(parts) >= 2 else None
+        if not far:
             return None
-        for icao in parts[1:-1]:
+        stops = parts[1:-1] if far[0] == (parts[0] if kind == "ARR" else parts[-1]) else []
+        if (t.sched and t.sched.direction == kind and len(parts) == 2 and far[0] != (parts[0] if kind == "ARR" else parts[-1])
+                and (parts[-1] if kind == "ARR" else parts[0]) in home):
+            # the board names the first origin (last destination), the route data the leg into (out of) our
+            # airport: a tag flight. BZ131 BGY -> TLV (board), BBG131 LIRF-LLBG, landed at Rome; BZ703 AMS ->
+            # TLV, BBG703 LGAV-LLBG, landed at Athens: two DIVERSIONs each (20 Oct 2026)
+            stops = [parts[0] if kind == "ARR" else parts[-1]]
+        for icao in stops:
             try:
                 pos = self.standing.airport(icao)
             except requests.RequestException:
@@ -3519,18 +3538,21 @@ class Monitor:
             k["told"] = True  # its first dive is alerted, as a check that the monitor sees them
             msg += (f" - probably a skydiving ride; no further alerts on it until {SKYDIVE_QUIET_S / 3600:.0f} h "
                     "after its last lift, except an emergency squawk")
-        if t.military and not t.large and kind != "EMERGENCY" and not (k and k.get("quiet")):
-            # trainers, fighters, light military aircraft manoeuvre as their job: one alert (a check that
-            # the monitor sees them), then only an emergency squawk for MILITARY_QUIET_S after the last
-            # suppressed one. 18 Oct 2026, Jordan: CHLE1B (PC21) 15 alerts in 31 min of aerobatics (14 on
-            # Telegram); 7436ac (AT8T, RAPTR / RAAD39) 17, its position jumping 28 nm back and forth.
+        if t.military and kind != "EMERGENCY" and not (k and k.get("quiet")):
+            # military aircraft manoeuvre, patrol and orbit as their job: one alert (a check that the monitor
+            # sees them), then only an emergency squawk for MILITARY_QUIET_S after the last suppressed one, and a
+            # Telegram follow-up when it lands or goes silent (telegram_followups). 18 Oct 2026, Jordan: CHLE1B
+            # (PC21) 15 alerts in 31 min of aerobatics; 7436ac (AT8T) 17, its position jumping 28 nm back and
+            # forth. 20 Oct 2026: IAM4188 (Italian Air Force AT76, "large") 7 alerts patrolling west of Israel.
             if t.mil_quiet and now - t.mil_quiet <= MILITARY_QUIET_S:
                 t.mil_quiet = now
-                log.info("%s %s - military aircraft manoeuvring, not alerted: %s", t.label(), kind, msg)
+                if not any(k == key and now - x < cooldown for k, x in t.mil_held):  # (counted as alerts would be)
+                    t.mil_held.append((key, now))
+                log.info("%s %s - military aircraft, alerted already: not alerted: %s", t.label(), kind, msg)
                 return False
-            t.mil_quiet = now
+            t.mil_quiet, t.mil_held = now, []
             msg += (f" - military aircraft: no further alerts on it until {MILITARY_QUIET_S / 3600:.0f} h after "
-                    "its last manoeuvre, except an emergency squawk")
+                    "its last one, except an emergency squawk; an update when it lands or goes silent")
         traffic, route = self.classify(t)
         if a.airport_traffic_only and traffic not in AIRPORT_TRAFFIC:
             return False

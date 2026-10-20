@@ -245,6 +245,9 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   when the route's far end agrees with the board) is logged, not a DIVERSION: KLM461 AMS -> TLV is EHAM-LCLK-LLBG
   and "went silent ... probably landing at LCA" (20 Oct 2026). 113 routes through TLV list stops (crowd-sourced,
   some stale); cost: a real diversion to a listed stop is only logged.
+  A tag flight is a stop too: when the board's origin (destination) differs from the route data's and the route data's
+  leg ends (starts) at our airport, the route data's other end is the stop. BZ131 BGY -> TLV (board), BBG131 LIRF-LLBG,
+  and BZ703 AMS -> TLV, BBG703 LGAV-LLBG, landed at Rome and Athens: two DIVERSIONs each (20 Oct 2026).
   A landing elsewhere must be believable (13 Oct 2026; all 4 DIVERSIONs of the run of 11-12 Oct were
   arrivals on approach to TLV with spoofed GPS - ETD3QF, AIZ282, ISR972, ELY5462): "on the ground" within
   `LANDING_AIRPORT_NM` (5) of an airport of the local `standing-data/` checkout (`StandingData.airfield_near`;
@@ -290,11 +293,15 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   positions over 1-3 min, and the alert says so. One set of limits for all (the owner: the simpler the
   better); alerts on military and on light / private aircraft carry a note that steep profiles are common
   there (4 of the 15 VERTICAL_RATE alerts on disk: GLF5 x2, C295, P750).
-  A military aircraft that is not large (trainers, fighters, light military types) gets one alert of any kind,
-  then only EMERGENCY until `MILITARY_QUIET_S` (2 h) after the last alert it would have had (`Track.mil_quiet`).
-  18 Oct 2026, Jordan: CHLE1B (PC21) 15 alerts in 31 min of aerobatics (14 on Telegram, "skydiving pattern"
-  among them - such types no longer count as jump planes), 7436ac (AT8T) 17 with its position jumping 28 nm
-  back and forth. Cost: a real accident of such an aircraft after its first alert is only logged.
+  A military aircraft (large too, since 20 Oct 2026) gets one alert of any kind, then only EMERGENCY until
+  `MILITARY_QUIET_S` (2 h) after the last alert it would have had (`Track.mil_quiet`; those are kept in
+  `Track.mil_held`, once per cooldown), and a Telegram follow-up as a reply when it lands or has been silent
+  `--lost-after-remote` (`telegram_followups`): how it ended, the alert sent, the ones held back (counted) and the
+  map with all of them. The owner: "one alert when issues start, and one more when the flight has landed /
+  disappeared". 18 Oct 2026, Jordan: CHLE1B (PC21) 15 alerts in 31 min of aerobatics (14 on Telegram, "skydiving
+  pattern" among them - such types no longer count as jump planes), 7436ac (AT8T) 17 with its position jumping
+  28 nm back and forth; 20 Oct: IAM4188 (Italian Air Force AT76, patrolling west of Israel) 7. Cost: a real accident
+  of a military aircraft after its first alert is only logged (and in its follow-up).
 - **ALTITUDE_WOBBLE / EARLY_DESCENT** (16 Oct 2026, from the incident fixtures; airline callsign and large
   aircraft only). Wobble: the altitude reverses 3+ times (each leg >= 150 ft, `reversals`) within 3 min below
   FL250, with the aircraft's own vertical rate both >= +500 and <= -500 (a lone bad altitude is 2 reversals with a
