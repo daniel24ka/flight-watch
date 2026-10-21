@@ -1268,8 +1268,8 @@ class Bluesky:
     """The announcements on Bluesky, threaded as the Announcer threads them (AGENTS.md "next step").
 
     On when the account is in the environment: BLUESKY_HANDLE + BLUESKY_APP_PASSWORD (an app password, never the
-    account's; the astro bots' Bluehandle / Blueword are read too). `atproto` is imported only then (pip install
-    atproto). Posts go through a queue to one worker thread, so a slow or failing Bluesky never holds up the poll;
+    account's; never the astro bots' Bluehandle / Blueword: the owner keeps that account off aviation). `atproto` is
+    imported only then (pip install atproto). Posts go through a queue to one worker thread, so a slow or failing Bluesky never holds up the poll;
     a failure is logged and the next post goes on (a reply whose parent never made it is posted top-level). The map
     local post id -> the returned strong ref threads the replies; it lives as long as the run, like the Announcer's
     threads. `--bluesky-skip` leaves kinds out as `--telegram-skip` does; each post sent is appended to
@@ -1279,8 +1279,8 @@ class Bluesky:
         import queue
         import threading
         self.args = args
-        self.handle = os.getenv("BLUESKY_HANDLE") or os.getenv("Bluehandle")
-        self.password = os.getenv("BLUESKY_APP_PASSWORD") or os.getenv("Blueword")
+        self.handle = os.getenv("BLUESKY_HANDLE")
+        self.password = os.getenv("BLUESKY_APP_PASSWORD")
         self.enabled = bool(self.handle and self.password)
         self.skip = {k.strip().upper() for k in (args.bluesky_skip or "").split(",") if k.strip()}
         self.client_factory = client_factory   # tests: a fake atproto client

@@ -1889,6 +1889,13 @@ class BlueskyTests(unittest.TestCase):
         n = fw.Notifier(args, None, fw.Announcer(args, out=lambda text: None), console=lambda text: None, bluesky=bsky)
         return n, fake
 
+    def test_the_astro_bots_account_is_never_used(self):
+        args = fw.parse_args(["--jsonl", "", "--posts", "", "--turn-zones", "", "--bluesky-posts", ""])
+        with mock.patch.dict(os.environ, {"Bluehandle": "astro.bsky.social", "Blueword": "pw"}, clear=False):
+            for k in ("BLUESKY_HANDLE", "BLUESKY_APP_PASSWORD"):
+                os.environ.pop(k, None)
+            self.assertFalse(fw.Bluesky(args, client_factory=lambda: None).enabled)
+
     def test_a_flight_is_one_thread(self):
         n, fake = self.make()
         n.send(alert_rec("EMERGENCY", "squawk 7700 (GENERAL EMERGENCY)", airline="Flydubai", remote=True, traffic="ARR", route=None))
