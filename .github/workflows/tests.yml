@@ -1,0 +1,35 @@
+# The tests on every push to main and every pull request, on Linux (the VPS) and Windows. No secrets, no network
+# beyond pip: the tests use a fake feed and a fake clock. node runs the pages' JS against the Python (test_pages.py).
+name: tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    # Windows reports but does not fail the run until the Windows fixes (single-instance lock, LF pages) are merged
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: python -m pip install -r requirements.txt pytest
+      - run: python -m pytest -q
