@@ -1,0 +1,4 @@
+# The pages load flightboard.js?v=<sha256 of the file>; a CRLF checkout (Windows, core.autocrlf) hashes differently
+# and tests/test_pages.py fails there. Keep the published files byte-identical everywhere.
+docs/*.js text eol=lf
+docs/*.html text eol=lf

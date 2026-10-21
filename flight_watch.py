@@ -3820,11 +3820,17 @@ def single_instance(path: str):
     crash); exit with an error when another monitor holds it. The open file is returned: keep it."""
     try:
         import fcntl
-    except ImportError:  # (not on Windows)
-        return None
+    except ImportError:  # Windows: msvcrt's byte-range lock, also released by the OS when the process ends
+        fcntl = None
+        import msvcrt
     f = open(path, "a+")
     try:
-        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if fcntl:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            # a byte far past the pid: a Windows lock also blocks reading, and the refused monitor reads the pid
+            f.seek(1 << 20)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
     except OSError:
         f.seek(0)
         pid = f.read().strip() or "?"
