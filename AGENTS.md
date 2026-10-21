@@ -245,9 +245,17 @@ new page with the old script failed ("FB.blocked is not a function"); a test fai
   The far end comes from the board's airport first (`Monitor.other_end`, IATA -> ICAO by `StandingData.airport_by_iata`), the
   route data only where it agrees: ELY5417 TLV -> TBS, listed LLBG-LCLK, landed at Tbilisi as "bound for LCLK" (19 Oct 2026).
   An arrival coming down at its own origin is its previous flight, not a DIVERSION, when it was first heard > 60 nm from it, never
-  farther, and never on the ground or climbing near it (`at_own_origin`; 9A-BTH changed ISR193 -> ISR182 in the air and "went
+  farther, and never on the ground before take-off or climbing near it (`at_own_origin`; 9A-BTH changed ISR193 -> ISR182 in the air and "went
   silent probably landing elsewhere" on approach to Madrid, 19 Oct 2026). Squawk replay: the real returns (SWA512 to Honolulu,
   LAN454 to Buenos Aires, first heard 46 nm out with its departure unseen) still alert.
+  Its own landing there does not count as "seen leaving" (4X-ABT, 20 Oct 2026: TLV -> Madrid as 6H183, then Madrid
+  -> Malaga already as ISR152, 6H152 AGP -> TLV on time: OFF_COURSE "heading away from TLV, 1,928 nm out" and
+  DIVERSION on the ground at Malaga). Such an arrival flying toward its origin is not OFF_COURSE either. Both need
+  where it came from to be seen (`Track.came_from`: on the ground away from its origin before take-off, or its
+  callsign changed in the air) and no emergency (`Monitor.positioning`): SWA512 (HNL -> SAN, 7700) watched from San
+  Diego is first heard at FL360 on its way back to Honolulu - a return, alerted (the squawk replay relied on the
+  landing being "seen leaving" before; 352 cases unchanged). One that flew away from its origin first and turns back
+  still alerts (FZ1073 toward Dubai).
   A landing within `DIVERTED_NM` of a stop listed in the route data (`planned_stop`: an airport between the ends,
   when the route's far end agrees with the board) is logged, not a DIVERSION: KLM461 AMS -> TLV is EHAM-LCLK-LLBG
   and "went silent ... probably landing at LCA" (20 Oct 2026). 113 routes through TLV list stops (crowd-sourced,

@@ -829,6 +829,8 @@ class Track:
     orig_first: float = -1.0  # an arrival: nm from its origin when first heard in this leg (-1: not yet)
     orig_max: float = 0.0     # the farthest it has been from its origin in this leg (at_own_origin)
     orig_left: bool = False   # seen on the ground or climbing out within 30 nm of its origin in this leg
+    came_from: bool = False   # where it came from is seen: on the ground away from its origin before take-off, or
+                              # its callsign changed in the air (the previous flight's) - at_own_origin / positioning
     sent: deque = field(default_factory=lambda: deque(maxlen=MAP_ALERTS))  # (kind, data time) of its alerts, for map links
 
     @property
@@ -1931,7 +1933,7 @@ class Monitor:
             t.flown_cs, t.sched = t.callsign, None  # (the board row, or the route data's direction)
         t.was_airborne, t.max_dist, t.route_dir, t.max_alt, t.left_home = False, 0.0, 0, 0, d < 15
         t.rose_home = False
-        t.orig_first, t.orig_max, t.orig_left = -1.0, 0.0, False
+        t.orig_first, t.orig_max, t.orig_left, t.came_from = -1.0, 0.0, False, False
         if unseen:
             t.takeoff, t.leg_start = 0.0, t.last.t
 
@@ -1966,6 +1968,7 @@ class Monitor:
             t.rose_home = t.rose_home and bool(t.last) and not t.last.on_ground
             t.sched, t.route_dir, t.was_airborne, t.max_dist, t.leg_start = None, 0, False, 0.0, now
             t.max_alt, t.orig_first, t.orig_max, t.orig_left = 0, -1.0, 0.0, False
+            t.came_from = bool(t.last) and not t.last.on_ground  # (its previous flight, under another callsign)
         t.callsign, t.cs_pending = new, None
 
     def check_track(self, t: Track, prev: Sample | None, ac: dict, spoofed: str, server_now: float) -> None:
@@ -2002,7 +2005,11 @@ class Monitor:
                 od = haversine_nm(s.lat, s.lon, orig[1], orig[2])
                 t.orig_first = od if t.orig_first < 0 else t.orig_first
                 t.orig_max = max(t.orig_max, od)
-                t.orig_left = t.orig_left or od <= 30 and (s.on_ground or (s.alt or 0) < 10000 and (s.vrate or 0) > 300)
+                # (on the ground before its take-off, not its landing there: 4X-ABT flew Madrid -> Malaga as ISR152
+                # (6H152 AGP -> TLV) and its touch-down at Malaga was "seen leaving it" - a DIVERSION, 20 Oct 2026)
+                t.orig_left = t.orig_left or od <= 30 and (s.on_ground and not t.was_airborne
+                                                           or (s.alt or 0) < 10000 and (s.vrate or 0) > 300)
+                t.came_from = t.came_from or od > 30 and s.on_ground and not t.was_airborne  # (ISR152 at Madrid)
         if not t.followed and (kind in CONFIRMED or (kind == "DEP?" and d < 15 and airline_like(t))):
             t.followed = True
             t.follow_why = "airport"
@@ -2810,9 +2817,7 @@ class Monitor:
                                f"{haversine_nm(s.lat, s.lon, dest[1], dest[2]):.0f} nm from it at "
                                f"{s.lat:.4f},{s.lon:.4f}{place}")
         elif kind == "DEP" and d < 15 and (t.max_dist > 40 or t.max_alt >= RETURN_MIN_ALT
-                                           or t.max_alt >= 1500 and (t.squawk in EMERGENCY_SQUAWKS or any(
-                                               k.startswith("EMERGENCY") and s.t - at <= 3 * 3600
-                                               for k, (at, _) in t.alerted.items()))):
+                                           or t.max_alt >= 1500 and self.in_emergency(t)):
             # Far out, or high: AS1282 (door plug, 6 Jan 2024) climbed to 16,000 ft and landed back
             # 29 nm out at most - too close for TURNING_BACK (--off-course-min-dist) and for 40 nm. Or
             # squawking an emergency: DL2692 (MSP -> JFK, 7700) landed back from 3,775 ft.
@@ -2871,6 +2876,22 @@ class Monitor:
             return None
         return (far, *pos) if pos else None
 
+    @staticmethod
+    def in_emergency(t: Track) -> bool:
+        """Squawking an emergency, or alerted one in the last 3 h."""
+        now = t.last.t if t.last else 0
+        return t.squawk in EMERGENCY_SQUAWKS or any(k.startswith("EMERGENCY") and now - at <= 3 * 3600
+                                                    for k, (at, _) in t.alerted.items())
+
+    def positioning(self, t: Track, orig: tuple) -> bool:
+        """An arrival on its way to its own origin, not back from it: never seen leaving it nor farther from it
+        than when first heard, where it came from seen (on the ground elsewhere, or its previous callsign in the
+        air), no emergency. ISR152 Madrid -> Malaga before 6H152 AGP -> TLV (20 Oct 2026); ISR193 -> ISR182 in
+        the air before Madrid. SWA512 (HNL -> SAN, 7700), watched from San Diego, was first heard at FL360 on its
+        way back to Honolulu: a return."""
+        return (t.orig_first > 60 and not t.orig_left and t.orig_max <= t.orig_first + 20 and t.came_from
+                and not self.in_emergency(t))
+
     def at_own_origin(self, t: Track, s: Sample) -> str | None:
         """An arrival coming down at its own origin without having been seen leaving it (first heard over 60 nm
         from it, never farther than that, never on the ground or climbing near it): its previous flight, already
@@ -2880,8 +2901,7 @@ class Monitor:
         at Prague), climbed out of it (SWA512 back at Honolulu) or was first heard near it (LAN454, 46 nm from
         Buenos Aires descending, its departure unseen)."""
         orig = self.other_end(t, "ARR")
-        if (orig and t.orig_first > 60 and not t.orig_left and t.orig_max <= t.orig_first + 20
-                and haversine_nm(s.lat, s.lon, orig[1], orig[2]) <= DIVERTED_NM):
+        if orig and self.positioning(t, orig) and haversine_nm(s.lat, s.lon, orig[1], orig[2]) <= DIVERTED_NM:
             return orig[0]
         return None
 
@@ -2932,6 +2952,11 @@ class Monitor:
         if far and haversine_nm(s.lat, s.lon, far[1], far[2]) < a.off_course_min_dist:
             return  # climbing out of an arrival's origin, on approach to a departure's destination (AeroSignals
             #         squawk replay: TO4755 out of Barcelona "heading away from ORY", AA2045 near SFO "back to PHL")
+        if (kind == "ARR" and far and t.orig_first > a.off_course_min_dist and self.positioning(t, far)
+                and heading_diff(s.track, bearing(s.lat, s.lon, far[1], far[2])) <= 30):
+            return  # never seen leaving its origin nor farther from it than when first heard, flying to it: getting
+            #         there (ISR152 Madrid -> Malaga before 6H152 AGP -> TLV, "heading 210 deg, 119 deg away from
+            #         TLV", 20 Oct 2026). FZ1073 turning back to Dubai had flown away from it for hours: alerted
         old = t.sample_ago(a.course_hold)
         if not old or old.t < t.leg_start:
             return

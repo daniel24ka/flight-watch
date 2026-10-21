@@ -2101,7 +2101,8 @@ class FarEndTests(unittest.TestCase):
                                        "UGTB,Tbilisi,UGTB,TBS,Tbilisi,GE,41.6692,44.9547,1624\n"
                                        "UGSB,Batumi,UGSB,BUS,Batumi,GE,41.6103,41.5997,105\n",
         "airports/schema-01/L/LE.csv": "Code,Name,ICAO,IATA,Location,CountryISO2,Latitude,Longitude,AltitudeFeet\n"
-                                       "LEMD,Madrid,LEMD,MAD,Madrid,ES,40.4719,-3.5626,1998\n",
+                                       "LEMD,Madrid,LEMD,MAD,Madrid,ES,40.4719,-3.5626,1998\n"
+                                       "LEMG,Malaga,LEMG,AGP,Malaga,ES,36.6749,-4.4991,53\n",
         "airports/schema-01/L/LB.csv": "Code,Name,ICAO,IATA,Location,CountryISO2,Latitude,Longitude,AltitudeFeet\n"
                                        "LBSF,Sofia,LBSF,SOF,Sofia,BG,42.6967,23.4114,1742\n",
     }
@@ -2156,10 +2157,34 @@ class FarEndTests(unittest.TestCase):
         self.assertEqual(ups, [])
         self.assertTrue(mon.notifier.tg_threads["73806d"]["done"])
 
+    def test_positioning_to_its_origin_under_its_callsign(self):
+        """4X-ABT flew TLV -> Madrid (6H183), then Madrid -> Malaga as ISR152 (6H152 AGP -> TLV, on time): OFF_COURSE
+        ("TLV arrival heading 210 deg, 119 deg away from TLV") and DIVERSION on the ground at Malaga (20 Oct 2026)."""
+        got = {}
+        for origin in ("AGP", "SOF"):
+            mon, feed, clock, alerts = self.setup([board_row("6H", "152", "A", local_time(Clock(), 6), origin)])
+            ident = dict(flight="ISR152", r="4X-ABT", t="A320")
+            mad, agp = (40.4719, -3.5626), (36.6749, -4.4991)
+            fly(mon, feed, clock, "738288", [dict(lat=mad[0], lon=mad[1], alt_baro="ground", gs=5, track=190)] * 3,
+                local=False, **ident)
+            brg = fw.bearing(*mad, *agp)
+            n = 200  # ~233 nm at 420 kt
+            alts = [min(1500 + 500 * i, 30000) for i in range(n)]
+            alts = [min(a, 1500 + 500 * (n - 1 - i)) for i, a in enumerate(alts)]
+            hop = path(*mad, [brg] * n, alts, gs=420)
+            hop = hop[:next((i for i, st in enumerate(hop) if fw.haversine_nm(st["lat"], st["lon"], *agp) < 4), n)]
+            fly(mon, feed, clock, "738288", hop, local=False, **ident)
+            fly(mon, feed, clock, "738288", [dict(lat=agp[0], lon=agp[1], alt_baro="ground", gs=10, track=190)] * 4,
+                local=False, **ident)
+            got[origin] = kinds(alerts, "738288")
+        self.assertEqual(got["AGP"], [])
+        self.assertIn("DIVERSION", got["SOF"])  # (bound from Sofia, on the ground at Malaga)
+
     def arrival_at_madrid(self, leaves):
         """An aircraft flying the 6H182 MAD -> TLV callsign coming down at Madrid; `leaves`: first seen
         departing Madrid, flying out 80 nm and back."""
-        mon, feed, clock, alerts = self.setup([board_row("6H", "182", "A", local_time(Clock(), 5), "MAD")])
+        mon, feed, clock, alerts = self.setup([board_row("6H", "182", "A", local_time(Clock(), 5), "MAD"),
+                                               board_row("6H", "193", "D", local_time(Clock(), -4), "MAD")])
         ident = dict(flight="ISR182", r="9A-BTH", t="A320")
         if leaves:
             fly(mon, feed, clock, "501d0a", [dict(lat=40.4719, lon=-3.5626, alt_baro="ground", gs=5, track=90)] * 3,
@@ -2174,11 +2199,26 @@ class FarEndTests(unittest.TestCase):
         top, rate = (14000, 200) if leaves else (30000, 220)  # 1,500 ft about 5 nm before Madrid
         approach = [st for st in path(lat, lon, [270] * 250, [max(top - rate * i, 1500) for i in range(250)],
                                       gs=250) if st["lon"] > -3.45]
+        if not leaves:  # (its previous flight's callsign in the air, taken up after CALLSIGN_HOLD)
+            fly(mon, feed, clock, "501d0a", approach[:20], local=False, **{**ident, "flight": "ISR193"})
+            approach = approach[20:]
         fly(mon, feed, clock, "501d0a", approach, local=False, **ident)
         del feed.aircraft["501d0a"]
         for _ in range(60):
             step(mon, clock)
         return kinds(alerts, "501d0a")
+
+    def test_return_first_heard_on_its_way_back_is_a_diversion(self):
+        """SWA512 (HNL -> SAN, 7700) watched from San Diego: first heard at FL360 362 nm out, flying back to Honolulu.
+        Nothing says where it came from: a return, not its previous flight (squawk replay, 21 Oct 2026)."""
+        mon, feed, clock, alerts = self.setup([board_row("6H", "182", "A", local_time(Clock(), 5), "MAD")])
+        ident = dict(flight="ISR182", r="9A-BTH", t="A320")
+        approach = [st for st in path(40.45, -1.40, [270] * 250, [max(30000 - 220 * i, 1500) for i in range(250)],
+                                      gs=250) if st["lon"] > -3.45]
+        fly(mon, feed, clock, "501d0a", approach, local=False, **ident)
+        fly(mon, feed, clock, "501d0a", [dict(lat=40.4719, lon=-3.5626, alt_baro="ground", gs=10, track=270)] * 4,
+            local=False, **ident)
+        self.assertIn("DIVERSION", kinds(alerts, "501d0a"))
 
     def test_previous_flight_landing_at_the_arrivals_origin(self):
         """9A-BTH changed ISR193 -> ISR182 in the air and went silent on approach to Madrid: "TLV arrival
@@ -2259,8 +2299,9 @@ class FarEndTests(unittest.TestCase):
                     **ident)
             climb = path(*tlv, [140] * 40 + [180] * 80, [min(1500 + 400 * i, 17000) for i in range(120)], gs=300)
             fly(mon, feed, clock, "738447", climb if seen_leaving else climb[30:], **ident)
-            got[seen_leaving] = "OFF_COURSE" in kinds(alerts, "738447")
-        self.assertEqual(got, {True: False, False: True})  # (first heard far out: nothing says it left TLV)
+            got[seen_leaving] = (mon.classify(mon.tracks["738447"])[0], "OFF_COURSE" in kinds(alerts, "738447"))
+        # first heard far out, nothing says where it came from: an arrival flying away (FarEndTests.positioning)
+        self.assertEqual(got, {True: ("DEP?", False), False: ("ARR", True)})
 
     def test_departure_silent_descending_into_its_destination(self):
         """IZ807 TLV -> Ramon went silent at 12,900 ft 37 nm out (coverage near Eilat): LOST_CONTACT."""
