@@ -509,7 +509,7 @@ messages in two minutes, each map showing only the track flown by then; the owne
 later messages reply to its first (`Notifier.tg_threads`, rebuilt from `--telegram-posts` at start: `message_id`, `reply_to`),
 and `Monitor.telegram_followups` sends one reply, `FOLLOW_UP`, when it lands or `TG_FOLLOWUP_S` (45 min) after its last
 message - for a flight with 2+ messages or an emergency / diversion / return: where it ended (or is), its alerts with times,
-and the map of the whole flight (`t` = its last report). The same squawk alerted within 3 h is not alerted again (AeroSignals'
+and the map of the whole flight (`t` = its last report). None after a landing alert (DIVERSION / RETURNED raised on the ground): LY353 TLV -> MUC landed at Athens on 21 Oct 2026, and the follow-up 2 min later repeated it. The same squawk alerted within 3 h is not alerted again (AeroSignals'
 post, then our feed's 7700), and an AeroSignals EMERGENCY on an aircraft last heard before the post is placed at the post's time.
 
 **AeroSignals as a second source of squawks** (19 Oct 2026, the owner: "so we won't miss a squawk"). OS82 TLV -> VIE squawked

@@ -2134,6 +2134,28 @@ class FarEndTests(unittest.TestCase):
             local=False, **ident)
         self.assertNotIn("DIVERSION", kinds(alerts, "503cc0"))
 
+    def test_no_follow_up_after_a_landing_alert(self):
+        """LY353 TLV -> MUC landed at Athens (21 Oct 2026): DIVERSION, then a follow-up 2 min later saying the same."""
+        mon, feed, clock, alerts = self.setup([board_row("LY", "5417", "D", local_time(Clock(), 0), "TBS")])
+        ups = []
+        mon.notifier.follow_up = lambda h, when, seg: ups.append(seg)
+        ident = dict(flight="ELY5417", r="4X-EKH", t="B738")
+        tlv = (32.0114, 34.8867)
+        fly(mon, feed, clock, "73806d", [dict(lat=tlv[0], lon=tlv[1], alt_baro="ground", gs=5, track=270)] * 3, **ident)
+        fly(mon, feed, clock, "73806d", path(*tlv, [10] * 6, [1500 + 800 * i for i in range(6)], gs=180), **ident)
+        clock.t += 3 * 3600
+        fly(mon, feed, clock, "73806d", path(41.63, 41.53, [110] * 6, [3000 - 400 * i for i in range(6)], gs=150),
+            local=False, **ident)
+        fly(mon, feed, clock, "73806d", [dict(lat=41.6103, lon=41.5997, alt_baro="ground", gs=12, track=120)] * 3,
+            local=False, **ident)
+        self.assertEqual(kinds(alerts, "73806d"), ["DIVERSION"])
+        at = fw.datetime.fromisoformat(alerts[0]["time"].replace("Z", "+00:00")).timestamp()
+        mon.notifier.tg_threads["73806d"] = {"id": 165, "t": at, "last": at, "n": 1}
+        fly(mon, feed, clock, "73806d", [dict(lat=41.6103, lon=41.5997, alt_baro="ground", gs=3, track=120)] * 30,
+            local=False, **ident)
+        self.assertEqual(ups, [])
+        self.assertTrue(mon.notifier.tg_threads["73806d"]["done"])
+
     def arrival_at_madrid(self, leaves):
         """An aircraft flying the 6H182 MAD -> TLV callsign coming down at Madrid; `leaves`: first seen
         departing Madrid, flying out 80 nm and back."""

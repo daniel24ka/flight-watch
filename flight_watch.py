@@ -2616,6 +2616,12 @@ class Monitor:
             sent = [(k, x) for k, x in t.sent if x >= th["t"] - 60]
             held = [(k, x) for k, x in t.mil_held if x >= th["t"] - 60]
             landed = s.on_ground and (s.gs is None or s.gs < 50) and s.t - th["last"] >= 120
+            if landed and sent and sent[-1][0] in ("DIVERSION", "RETURNED") and t.alerted.get(
+                    sent[-1][0], (0, 0))[0] == sent[-1][1] and self.landed_at(t, sent[-1][1]):
+                # its last message was the landing (LY353 TLV -> MUC on the ground at Athens, 21 Oct 2026: the
+                # follow-up 2 min later said the same, and that message's map already showed the whole flight)
+                th["done"] = True
+                continue
             if t.military:  # (one alert, then quiet: the follow-up says how it ended, not how it goes on)
                 if not landed and now - s.t < self.args.lost_after_remote:
                     continue
@@ -2655,6 +2661,12 @@ class Monitor:
                     segments += ([{"text": " \u00b7 "}] if i else []) + [{"link": label, "url": links[key]}]
             n.follow_up(hexid, s.t, segments)
             th["done"] = True
+
+    @staticmethod
+    def landed_at(t: Track, when: float) -> bool:
+        """It was on the ground at `when` (its report then): an alert at that time was about the landing."""
+        at = [x for x in t.samples if abs(x.t - when) < 1]
+        return bool(at) and at[-1].on_ground
 
     def skydive_note(self, t: Track, now: float) -> str:
         """' [skydiving pattern: ...]' for alerts within 30 min of a lift, else ''."""
