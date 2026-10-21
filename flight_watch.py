@@ -1264,13 +1264,136 @@ class Announcer:
         return f"{mark}{body.replace(chr(10), chr(10) + indent)}\n{indent}{urls}"
 
 
+class Bluesky:
+    """The announcements on Bluesky, threaded as the Announcer threads them (AGENTS.md "next step").
+
+    On when the account is in the environment: BLUESKY_HANDLE + BLUESKY_APP_PASSWORD (an app password, never the
+    account's; the astro bots' Bluehandle / Blueword are read too). `atproto` is imported only then (pip install
+    atproto). Posts go through a queue to one worker thread, so a slow or failing Bluesky never holds up the poll;
+    a failure is logged and the next post goes on (a reply whose parent never made it is posted top-level). The map
+    local post id -> the returned strong ref threads the replies; it lives as long as the run, like the Announcer's
+    threads. `--bluesky-skip` leaves kinds out as `--telegram-skip` does; each post sent is appended to
+    `--bluesky-posts` with its bsky.app link."""
+
+    def __init__(self, args, client_factory=None):
+        import queue
+        import threading
+        self.args = args
+        self.handle = os.getenv("BLUESKY_HANDLE") or os.getenv("Bluehandle")
+        self.password = os.getenv("BLUESKY_APP_PASSWORD") or os.getenv("Blueword")
+        self.enabled = bool(self.handle and self.password)
+        self.skip = {k.strip().upper() for k in (args.bluesky_skip or "").split(",") if k.strip()}
+        self.client_factory = client_factory   # tests: a fake atproto client
+        self.client = None
+        self.refs: dict[str, object] = {}       # local post id -> its strong ref
+        self.roots: dict[str, str] = {}         # local post id -> the local id its thread starts with on Bluesky
+        self.queue: "queue.Queue" = queue.Queue()
+        self.next_try = 0.0                     # after a failed login: not before this
+        self.worker = None
+        if self.enabled and client_factory is None:
+            self.worker = threading.Thread(target=self._run, name="bluesky", daemon=True)
+            self.worker.start()
+
+    def wanted(self, rec: dict, post: dict) -> bool:
+        if not self.enabled or not post:
+            return False
+        # a skipped kind still goes out when the flight also has another anomaly ([also: ...]), as on Telegram
+        return rec["kind"] not in self.skip or bool(rec.get("recent"))
+
+    def enqueue(self, post: dict) -> None:
+        self.queue.put(post)
+        if self.worker is None:   # (tests: no thread - sent now)
+            self.drain()
+
+    def drain(self) -> None:
+        while not self.queue.empty():
+            self.send(self.queue.get())
+
+    def _run(self) -> None:
+        while True:
+            self.send(self.queue.get())
+
+    def _login(self):
+        if self.client is not None:
+            return self.client
+        if time.time() < self.next_try:
+            return None
+        try:
+            if self.client_factory:
+                c = self.client_factory()
+            else:
+                from atproto import Client
+                c = Client()
+            c.login(self.handle, self.password)
+            self.client = c
+            return c
+        except Exception as e:  # (no atproto installed, wrong password, Bluesky down): try again in 10 min
+            self.next_try = time.time() + 600
+            log.error("Bluesky login failed (%s); next try in 10 min", e)
+            return None
+
+    def builder(self, segments: list):
+        if self.client_factory:
+            return segments   # the fake client takes the segments as they are
+        from atproto import client_utils
+        tb = client_utils.TextBuilder()
+        for s in segments:
+            if "link" in s:
+                tb.link(s["link"], s["url"])
+            else:
+                tb.text(s["text"])
+        return tb
+
+    def send(self, post: dict) -> str | None:
+        """Post one announcement; its bsky.app url, or None."""
+        c = self._login()
+        if c is None:
+            self.log_post(post, None)
+            return None
+        parent = self.refs.get(post.get("reply_to") or "")
+        root_id = self.roots.get(post.get("reply_to") or "")
+        try:
+            kw = {}
+            if parent is not None:
+                if self.client_factory:
+                    kw["reply_to"] = {"parent": parent, "root": self.refs.get(root_id, parent)}
+                else:
+                    from atproto import models
+                    kw["reply_to"] = models.AppBskyFeedPost.ReplyRef(parent=parent, root=self.refs.get(root_id, parent))
+            resp = c.send_post(self.builder(post["segments"]), **kw)
+        except Exception as e:
+            log.warning("Bluesky post failed (%s): %s %s", e, post["kind"], post["hex"])
+            self.log_post(post, None)
+            return None
+        if self.client_factory:
+            ref = resp
+        else:
+            from atproto import models
+            ref = models.create_strong_ref(resp)
+        self.refs[post["id"]] = ref
+        self.roots[post["id"]] = root_id if parent is not None else post["id"]
+        url = (getattr(resp, "url", None) or str(resp)) if self.client_factory else \
+            f"https://bsky.app/profile/{self.handle}/post/{resp.uri.split('/')[-1]}"
+        self.log_post(post, url)
+        return url
+
+    def log_post(self, post: dict, url: str | None) -> None:
+        if not self.args.bluesky_posts:
+            return
+        with open(self.args.bluesky_posts, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"time": post["time"], "id": post["id"], "kind": post["kind"], "hex": post["hex"],
+                                "reply_to": post.get("reply_to"), "sent": bool(url), "url": url, "text": post["text"]},
+                               ensure_ascii=False) + "\n")
+
+
 # --------------------------------------------------------------------------- notifier
 class Notifier:
-    def __init__(self, args, http: Http, announcer: Announcer | None = None, console=None):
+    def __init__(self, args, http: Http, announcer: Announcer | None = None, console=None, bluesky: Bluesky | None = None):
         self.args, self.http = args, http
         # without --verbose the console shows one line per alert (the log is off below ERROR)
         self.console = console or (print if not args.verbose else (lambda text: None))
         self.announcer = announcer or Announcer(args)
+        self.bluesky = bluesky or Bluesky(args)
         self.tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.tg_var = "TELEGRAM_CHANNEL_ID" if args.telegram_to == "channel" else "TELEGRAM_CHAT_ID"
         self.tg_chat = os.getenv(self.tg_var)
@@ -1292,7 +1415,9 @@ class Notifier:
                 f"{' ' + rec['route'] if rec['route'] else ''} - {rec['message']}")
         log.info("%s | %s", text, rec["links"]["live_adsbx"])
         self.console(self.row(rec))
-        self.announcer.announce(rec)
+        post = self.announcer.announce(rec)
+        if self.bluesky.wanted(rec, post):
+            self.bluesky.enqueue(post)
         if self.args.jsonl:
             with open(self.args.jsonl, "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -3781,6 +3906,11 @@ def parse_args(argv=None):
                    help="chat: TELEGRAM_CHAT_ID (a chat with the bot); channel: TELEGRAM_CHANNEL_ID (the public channel)")
     g.add_argument("--telegram-posts", default="posts_telegram.jsonl",
                    help="append each message sent to Telegram here ('' to disable)")
+    g.add_argument("--bluesky-skip", default=os.getenv("BLUESKY_SKIP", "LOST_CONTACT,CONTACT_RESTORED,POSITION_JUMP,GPS_DEGRADED,MASS_SILENCE,TOWARD_ISRAEL"),
+                   help="alert kinds not posted to Bluesky (as --telegram-skip). Posting is on when BLUESKY_HANDLE and "
+                        "BLUESKY_APP_PASSWORD (an app password) are in the environment; needs pip install atproto")
+    g.add_argument("--bluesky-posts", default="posts_bluesky.jsonl",
+                   help="append each post sent to Bluesky (with its bsky.app link, or sent: false) here ('' to disable)")
     g.add_argument("--ntfy-topic", default=os.getenv("NTFY_TOPIC"), help="ntfy topic name")
     g.add_argument("--ntfy-server", default=os.getenv("NTFY_SERVER", "https://ntfy.sh"))
     g.add_argument("--log-file", help="also write the full log (as with -v) to this file")
