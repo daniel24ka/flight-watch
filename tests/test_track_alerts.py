@@ -47,6 +47,25 @@ class TrackAlertsFZ1073(unittest.TestCase):
         self.assertLess(dive["time"], 1790746294)  # before the squawk
         self.assertTrue({"near", "DXB", "TLV"} >= {a["watched_from"] for a in self.got["alerts"]})
 
+    def test_segments_drawn_as_the_incident_maps_draw_them(self):
+        """The dive (>14,000 ft in <30 s) is a steep change, in tools/track_segments' words."""
+        segs = self.got["segments"]
+        steep = [g for g in segs if g["kind"] == "steep" and 1790745600 <= g["a"]["t"] <= 1790745800]  # 05:20-05:23Z
+        self.assertTrue(steep, {g["kind"] for g in segs})
+        self.assertTrue(all({"t", "lat", "lon", "alt"} <= set(g["a"]) for g in segs))
+        self.assertNotIn("jump", {g["kind"] for g in segs})
+
+    def test_a_position_off_the_track_is_a_jump(self):
+        """DNA541 (21 Oct 2026, GPS interference over Lebanon): positions tens of km off its track."""
+        day0 = 1790726400
+        rows = [[1790746000 + 10 * i, 33.0, 36.0 + 0.02 * i, 10000, 420, 90, 0, "DNA541", None, None, None]
+                for i in range(30)]
+        rows[15][1] -= 0.5  # 30 nm south for one report
+        got = track_alerts.analyze([readsb_trace(rows, day0)], FZ1073, 1790746150)
+        jumps = [g for g in got["segments"] if g["kind"] == "jump"]
+        self.assertEqual(len(jumps), 2, got["segments"])  # out and back
+        self.assertTrue(all(g["text"].startswith("jump: 55.6 km in 10 s") for g in jumps), jumps)
+
     def test_no_trace_or_no_flight_then(self):
         self.assertIn("error", track_alerts.analyze([], FZ1073, 1790746294))
         self.assertIn("error", track_alerts.analyze([readsb_trace([[1790746294, 30, 38, 15000, 400, 300, 0,

@@ -15,16 +15,34 @@ body{display:flex;flex-direction:column}
 #map{position:absolute;inset:0}
 #ext{position:absolute;top:0;right:0;width:50%;height:100%;border:0;display:none;background:#eee}
 #main.v-both #map,#main.v-both .credits{right:50%} #main.v-both #ext{display:block;border-left:2px solid #999;box-sizing:border-box}
-#main.v-ext #ext{display:block;width:100%} #main.v-ext #map,#main.v-ext #info,#main.v-ext .credits{display:none}
+#main.v-ext #ext{display:block;width:100%} #main.v-ext #map,#main.v-ext #infobox,#main.v-ext #inforeopen,#main.v-ext .credits{display:none}
 #views button.on{background:#1f6fb2;color:#fff;border-color:#1f6fb2}
-#info{position:absolute;top:8px;left:8px;z-index:2;background:rgba(255,255,255,.93);border:1px solid #ccc;border-radius:6px;
-      padding:8px 10px;font-size:13px;max-width:330px;line-height:1.45}
+#infobox{position:absolute;top:8px;left:8px;z-index:2;background:rgba(255,255,255,.93);border:1px solid #ccc;border-radius:6px;
+      font-size:13px;max-width:330px;line-height:1.45;max-height:calc(100% - 40px);display:flex;flex-direction:column}
+#info{padding:2px 10px 8px;overflow:auto;-webkit-overflow-scrolling:touch}
+.boxbar{display:flex;align-items:center;gap:4px;padding:2px 4px 0 10px;min-height:28px}
+.boxbar .boxtitle{flex:1;font-weight:bold;font-size:12px;color:#444;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.boxbar button,#inforeopen{border:0;background:none;font-size:16px;line-height:1;padding:4px 7px;cursor:pointer;color:#444;border-radius:4px;min-width:30px;min-height:28px}
+.boxbar button:hover{background:#eee}
+#infobox.collapsed #info{display:none} #infobox.closed{display:none}
+#inforeopen{position:absolute;top:8px;left:8px;z-index:2;display:none;background:rgba(255,255,255,.93);border:1px solid #ccc;font-size:14px}
+#infobox.closed + #inforeopen{display:block} #main.v-ext #infobox.closed + #inforeopen{display:none}
+#more{display:none}
 #info table{border-collapse:collapse} #info td{padding:0 6px 0 0;vertical-align:top} #info td:first-child{color:#666}
 .warn{color:#a01a12;font-weight:bold} .note{color:#666;font-size:12px}
 .stale{background:#fff3cd;border:1px solid #e0b000;border-radius:4px;padding:6px 8px;margin:4px 0;font-size:13px}
 .stale a{white-space:nowrap}
 .credits{position:absolute;bottom:0;left:0;right:0;z-index:2;font-size:10px;color:#555;background:rgba(255,255,255,.8);padding:2px 6px}
-@media (max-width:600px){#info{max-width:none;right:8px;font-size:12px}}
+@media (max-width:600px){
+  #infobox{max-width:none;right:8px;font-size:12px;max-height:45%}
+  /* the toolbar: the essentials in one row, the rest behind "⋯" */
+  #top{gap:4px 8px;padding:4px 6px;font-size:12px} #title{font-size:13px;flex-basis:100%}
+  #top .opt{display:none} #top.open .opt{display:inline-block} #more{display:inline-block}
+  #top a.btn,#top button{padding:5px 9px}
+  /* the credits: one line (the map's source stays in view), all of it on a tap */
+  .credits{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;padding-right:22px}
+  .credits::after{content:"▴";position:absolute;right:6px;bottom:2px}
+  .credits.open{white-space:normal;max-height:40%;overflow:auto} .credits.open::after{content:"▾"}}
 @media (max-width:800px){  /* narrow screen: "both" = our map above, ADS-B Exchange below */
   #main.v-both #map{right:0;bottom:50%} #main.v-both .credits{right:0;bottom:50%}
   #main.v-both #ext{top:50%;width:100%;height:50%;border-left:0;border-top:2px solid #999}}
@@ -36,23 +54,30 @@ body{display:flex;flex-direction:column}
   <button id="refresh" title="ask for the latest data now (the live feed is sometimes busy)">↻ refresh</button>
   <span id="views" style="display:none" title="the flight of the alert: on our map, on ADS-B Exchange (live while it flies, its replay afterwards), or both">
     <button data-v="ours">our map</button><button data-v="ext">ADS-B Exchange</button><button data-v="both">both</button></span>
-  <span class="note">elsewhere:</span>
-  <a id="adsbx" class="btn" target="_blank" rel="noopener" style="display:none" title="this aircraft live on ADS-B Exchange">ADS-B Exchange ↗</a>
-  <a id="fr24" class="btn" target="_blank" rel="noopener" style="display:none" title="this flight on Flightradar24">FR24 ↗</a>
-  <label>times <select id="zone"><option value="Asia/Jerusalem">Israel</option><option value="UTC">UTC</option>
+  <span class="note opt">elsewhere:</span>
+  <a id="adsbx" class="btn opt" target="_blank" rel="noopener" style="display:none" title="this aircraft live on ADS-B Exchange">ADS-B Exchange ↗</a>
+  <a id="fr24" class="btn opt" target="_blank" rel="noopener" style="display:none" title="this flight on Flightradar24">FR24 ↗</a>
+  <button id="more" title="more options">⋯</button>
+  <label class="opt">times <select id="zone"><option value="Asia/Jerusalem">Israel</option><option value="UTC">UTC</option>
     <option value="local">this computer's time zone</option></select></label>
-  <span class="note">units: m, km, km/h · <span style="color:#1f6fb2">━</span> flown track ·
+  <span class="note opt">units: m, km, km/h · <span style="color:#1f6fb2">━</span> flown track ·
     <span style="color:#888">━</span> planned route · <span style="color:#dc3c28">━</span> next 5 min</span>
-  <span class="note">altitude ×<input id="zx" type="range" min="1" max="20" value="3" style="vertical-align:middle;width:90px"><b
+  <span class="note opt">altitude ×<input id="zx" type="range" min="1" max="20" value="3" style="vertical-align:middle;width:90px"><b
     id="zxv">3</b></span>
-  <button id="terrainbtn" title="the ground's heights (loads more slowly)">show terrain</button>
-  <span class="note" title="mouse: right-drag or Ctrl+drag; touch: two-finger drag">tilt: right-drag</span>
-  <button id="analyzebtn" title="run our monitor's checks (flight_watch.py, in the browser) on this flight's track and mark every alert they raise - loads Python, ~10 MB the first time">analyse track</button>
-  <span class="note" id="marklegend" style="display:none"><span style="color:#f08c00">●</span> alert sent ·
-    <span style="color:#8c3cc8">◯</span> analysis</span>
+  <button id="terrainbtn" class="opt" title="the ground's heights (loads more slowly)">show terrain</button>
+  <span class="note opt" title="mouse: right-drag or Ctrl+drag; touch: two-finger drag">tilt: right-drag or two fingers</span>
+  <button id="analyzebtn" title="run our monitor's checks (flight_watch.py, in the browser) on this flight's track: every alert they raise, and the track's position jumps, steep altitude changes, altitude glitches and gaps - loads Python, ~10 MB the first time">analyse track</button>
+  <span class="note opt" id="marklegend" style="display:none"><span style="color:#f08c00">●</span> alert sent ·
+    <span style="color:#008080">◯</span> analysis</span>
+  <span class="note opt" id="seglegend" style="display:none"><span style="color:#ff9900">━</span> position jump ·
+    <span style="color:#9b30d9">━</span> steep altitude change · <span style="color:#d670d6">━</span> altitude glitch ·
+    <span style="color:#6e6e6e">━</span> no positions &gt; 2 min</span>
   <span id="status" class="note"></span>
 </div>
-<div id="main"><div id="map"></div><iframe id="ext" title="the flight on ADS-B Exchange"></iframe><div id="info">loading…</div>
+<div id="main"><div id="map"></div><iframe id="ext" title="the flight on ADS-B Exchange"></iframe><div id="infobox"><div class="boxbar"><span class="boxtitle" id="infotitle">details</span>
+  <button id="infofold" title="collapse / expand" aria-label="collapse or expand the details">▾</button>
+  <button id="infoclose" title="close (ⓘ brings it back)" aria-label="close the details">×</button></div>
+  <div id="info">loading…</div></div><button id="inforeopen" title="show the details" aria-label="show the details">ⓘ</button>
 <div class="credits">Map: Powered by <a href="https://www.esri.com">Esri</a> | Sources: Esri, HERE, Garmin, USGS, Intermap,
 INCREMENT P, NRCan, Esri Japan, METI, Esri China (Hong Kong), Esri Korea, Esri (Thailand), NGCC,
 © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, and the GIS User Community ·
@@ -68,6 +93,27 @@ Elevation: <a href="https://registry.opendata.aws/terrain-tiles/">Terrain Tiles<
 const TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}";
 const POLL_S = 10;
 const $ = id => document.getElementById(id);
+
+// The details box: open, collapsed to its title bar, or closed (ⓘ reopens it); the choice is kept per browser.
+const store = {get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+               set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* private window */ } }};
+function infoState(state) {
+  const box = $("infobox");
+  box.classList.toggle("collapsed", state === "collapsed");
+  box.classList.toggle("closed", state === "closed");
+  $("infofold").textContent = state === "collapsed" ? "▸" : "▾";
+  store.set("fm.info", state);
+}
+$("infofold").onclick = () => infoState($("infobox").classList.contains("collapsed") ? "open" : "collapsed");
+$("infotitle").onclick = $("infofold").onclick;
+$("infoclose").onclick = () => infoState("closed");
+$("inforeopen").onclick = () => infoState("open");
+infoState(store.get("fm.info") || "open");
+$("more").onclick = () => { const open = $("top").classList.toggle("open"); $("more").textContent = open ? "×" : "⋯"; };
+document.querySelector(".credits").addEventListener("click", e => {
+  if (e.target.closest("a") || !matchMedia("(max-width:600px)").matches) return;
+  e.currentTarget.classList.toggle("open");
+});
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 const params = new URLSearchParams(location.search);
 let ZONE = "Asia/Jerusalem", flights = [], cur = null, timer = null, fitted = false, skipped = new Set();
@@ -83,7 +129,19 @@ const SENT = (params.get("a") || "").split(".").map(x => /^([A-Z_]+)~(-?\d+)$/.e
   .map(m => ({kind: m[1], t: T0 + +m[2]}));
 let ANALYSIS = {state: "off"};  // off | running | shown | hidden | error, with hex, alerts, msg
 const PYODIDE = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/";
-const PY_FILES = ["flight_watch.py", "tests/replay.py", "tools/capture_incident.py", "tools/track_alerts.py"];
+const PY_FILES = ["flight_watch.py", "tests/replay.py", "tools/capture_incident.py", "tools/track_segments.py",
+                  "tools/track_alerts.py"];
+// Opened from an alert (t=), the analysis starts by itself once the track is drawn - not on a phone (Python
+// is ~10 MB the first time, and seconds of CPU), nor when the browser asks to save data, nor with analyze=0:
+// there the button runs it.
+const AUTO_ANALYSIS = T0 > 0 && params.get("analyze") !== "0" &&
+  !matchMedia("(max-width:600px), (pointer:coarse)").matches && !(navigator.connection && navigator.connection.saveData);
+// the track's segments from the analysis (tools/track_segments.py), coloured as the incident maps draw them
+const SEG = {jump: {color: [255, 153, 0], width: 3}, steep: {color: [155, 48, 217], width: 4},
+             glitch: {color: [214, 112, 214], width: 4}, gap: {color: [110, 110, 110], width: 1.5}};
+const SEG_NAMES = {jump: "position jump", steep: "steep altitude change", glitch: "altitude glitch", gap: "no positions > 2 min"};
+/** track_segments' texts: times are ⟦style:epoch⟧, shown in the zone picked. */
+const segText = text => esc(text).replace(/⟦(\w+):([\d.]+)⟧/g, (_, f, t) => esc(FB.fmt(+t, ZONE, f)));
 
 // heights: the track drawn at its altitude (x Z, above sea level) over a flat map, or over the ground's
 // heights (x Z, as the incident maps' "show terrain"); tilting down to 85 deg shows them (deck.gl's default: 60)
@@ -363,7 +421,7 @@ onmessage = async e => {
 let worker = null;
 
 /** The trace drawn, replayed through flight_watch.py's checks (tools/track_alerts.analyze). */
-async function analyse() {
+async function analyse(auto = false) {
   const hex = cur && (cur.hex || cur.ac && cur.ac.hex);
   if (!cur || !cur.raw || !cur.raw.length) {
     ANALYSIS = {state: "error", hex, msg: traceProblem(cur && cur.raw && cur.raw.errors || [])};
@@ -373,7 +431,7 @@ async function analyse() {
   const t = alertOf && alertOf.hex === hex ? alertOf.t : last;
   const ends = (cur.ends || []).length === 2
     ? cur.ends.map(e => ({code: e.iata || e.icao, icao: e.icao, lat: e.lat, lon: e.lon, name: e.city || ""})) : [];
-  ANALYSIS = {state: "running", hex, msg: worker ? "analysing…" : "analysing: loading Python (~10 MB the first time)…"};
+  ANALYSIS = {state: "running", hex, auto, msg: worker ? "analysing…" : "analysing: loading Python (~10 MB the first time)…"};
   analysisUI();
   const started = performance.now();
   if (!worker) worker = new Worker(URL.createObjectURL(new Blob([WORKER], {type: "text/javascript"})));
@@ -386,9 +444,15 @@ async function analyse() {
   if (ANALYSIS.hex !== hex || ANALYSIS.state !== "running") return;  // another flight meanwhile
   const s = ((performance.now() - started) / 1000).toFixed(1);
   if (res.error || res.ok.error) ANALYSIS = {state: "error", hex, msg: "analysis failed: " + (res.error || res.ok.error)};
-  else ANALYSIS = {state: "shown", hex, alerts: res.ok.alerts,
-                   msg: `analysis: ${res.ok.alerts.length} alert${res.ok.alerts.length === 1 ? "" : "s"} from our checks on this track ` +
-                        `(${FB.fmt(res.ok.leg[0], ZONE, "hm")}-${FB.fmt(res.ok.leg[1], ZONE, "hm")}; ${s} s)`};
+  else {
+    const segs = res.ok.segments || [], n = {};
+    for (const g of segs) n[g.kind] = (n[g.kind] || 0) + 1;
+    const counted = Object.keys(SEG).filter(k => n[k]).map(k => `${n[k]} × ${SEG_NAMES[k]}`).join(", ");
+    ANALYSIS = {state: "shown", hex, auto, alerts: res.ok.alerts, segments: segs,
+                msg: `analysis: ${res.ok.alerts.length} alert${res.ok.alerts.length === 1 ? "" : "s"} from our checks on this track ` +
+                     `(${FB.fmt(res.ok.leg[0], ZONE, "hm")}-${FB.fmt(res.ok.leg[1], ZONE, "hm")}; ${s} s)` +
+                     (counted ? `; in the track: ${counted}` : "")};
+  }
   analysisUI();
 }
 
@@ -409,9 +473,11 @@ function traceProblem(errors) {
   return "no trace of this flight to analyse";
 }
 
-/** ?analyze: start once the trace and the route's ends are known. */
+/** ?analyze (or AUTO_ANALYSIS, when there is a trace): start once the trace and the route's ends are known. */
 function autoAnalyse() {
-  if (params.has("analyze") && ANALYSIS.state === "off" && cur && cur.endsDone && cur.raw && (cur.raw.length || cur.traceDone)) analyse();
+  if (ANALYSIS.state !== "off" || !cur || !cur.endsDone || !cur.raw) return;
+  if (params.has("analyze") && params.get("analyze") !== "0" && (cur.raw.length || cur.traceDone)) analyse();
+  else if (AUTO_ANALYSIS && cur.raw.length) analyse(true);
 }
 
 function analysisUI() {
@@ -479,6 +545,7 @@ function titles() {
   const extra = [!f.offBoard && sent && !f.callsigns.includes(sent) ? "sent " + sent : "",
                  ac && ac.r || "", f.offBoard && name === hex ? "" : hex].filter(Boolean);
   $("title").textContent = head + (extra.length ? " · " + extra.join(" · ") : "");
+  $("infotitle").textContent = head;
   $("title").title = f.offBoard && a && b ? "route from the route database (crowd-sourced, sometimes wrong)" : "";
   document.title = name + " - TLV flight map";
 }
@@ -560,8 +627,10 @@ function render() {
 function withView(q) {
   q.delete("x"); q.delete("terrain"); q.delete("a"); q.delete("analyze");
   if (params.get("a")) q.set("a", params.get("a"));
-  if (ANALYSIS.state === "shown" || ANALYSIS.state === "running" || ANALYSIS.state === "error" && params.has("analyze"))
-    q.set("analyze", "");  // kept after a failure: reloading later tries again
+  if ((ANALYSIS.state === "shown" || ANALYSIS.state === "running") && !ANALYSIS.auto
+      || ANALYSIS.state === "error" && params.has("analyze"))
+    q.set("analyze", "");  // kept after a failure: reloading later tries again; not when it started by itself
+                           // (a link copied on a computer would start it on a phone)
   if (Z !== 3) q.set("x", Z);
   if (TERRAIN) q.set("terrain", 1);
   return q;
@@ -598,6 +667,18 @@ function draw() {
   // a gap of missing altitudes keeps the last one known
   let h = 0;
   const path3 = trail.map(p => { if (typeof p.alt === "number" || p.alt === "ground") h = hgt(p.alt); return [p.lon, p.lat, h]; });
+  // the analysis' segments; the track is broken at its jumps and gaps (the coloured hop is drawn instead)
+  const segs = ANALYSIS.state === "shown" && ANALYSIS.hex === (cur.hex || ac && ac.hex) ? ANALYSIS.segments || [] : [];
+  const cut = new Map(segs.filter(g => g.kind === "jump" || g.kind === "gap").map(g => [Math.round(g.b.t * 10), g.a.t]));
+  const paths = [[]];
+  trail.forEach((p, i) => {
+    const from = cut.get(Math.round(p.t * 10));
+    if (i && from !== undefined && Math.abs(trail[i - 1].t - from) < 0.5 && paths[paths.length - 1].length) paths.push([]);
+    paths[paths.length - 1].push(path3[i]);
+  });
+  const segData = segs.map(g => ({path: [[g.a.lon, g.a.lat, hgt(g.a.alt)], [g.b.lon, g.b.lat, hgt(g.b.alt)]], ...SEG[g.kind],
+                                  tip: `<b>${SEG_NAMES[g.kind]}</b><br>${segText(g.text)}`}));
+  $("seglegend").style.display = segs.length ? "" : "none";
   // alert markers on the track at their time (the nearest point, within 15 min)
   const near = x => trail.reduce((b, p) => p.lat != null && (!b || Math.abs(p.t - x) < Math.abs(b.t - x)) ? p : b, null);
   const mark = (a, tip) => { const p = near(a.t); return p && Math.abs(p.t - a.t) < 900 ? {...a, pos: [p.lon, p.lat, hgt(p.alt)], tip} : null; };
@@ -637,8 +718,11 @@ function draw() {
       getPath: d => d.path, getColor: [90, 90, 90, 120], widthMinPixels: 2, ...onGround()}),
     new deck.PathLayer({id: "shadow" + TERRAIN, data: trail.length > 1 ? [{path: trail.map(p => [p.lon, p.lat])}] : [],
       getPath: d => d.path, getColor: [60, 60, 60, 90], widthMinPixels: 1, ...onGround()}),
-    new deck.PathLayer({id: "trail", data: path3.length > 1 ? [{path: path3}] : [],
-      getPath: d => d.path, getColor: [31, 111, 178, 230], widthUnits: "pixels", getWidth: 5, updateTriggers: {getPath: [Z, path3.length]}}),
+    new deck.PathLayer({id: "trail", data: paths.filter(p => p.length > 1).map(path => ({path})),
+      getPath: d => d.path, getColor: [31, 111, 178, 230], widthUnits: "pixels", getWidth: 5,
+      updateTriggers: {getPath: [Z, path3.length, segs.length]}}),
+    new deck.PathLayer({id: "segments", data: segData, pickable: true, getPath: d => d.path, getColor: d => d.color,
+      widthUnits: "pixels", getWidth: d => d.width + 1, widthMinPixels: 2, updateTriggers: {getPath: Z}}),
     new deck.LineLayer({id: "drop", data: pos && pos[2] > 0 ? [{a: [pos[0], pos[1], 0], b: pos}] : [],
       getSourcePosition: d => d.a, getTargetPosition: d => d.b, getColor: [220, 60, 40, 150], getWidth: 1}),
     new deck.LineLayer({id: "ahead", data: ahead, getSourcePosition: d => d.a, getTargetPosition: d => d.b,
@@ -653,11 +737,11 @@ function draw() {
       getLineColor: [255, 255, 255], lineWidthMinPixels: 2, radiusMinPixels: 6,
       data: alertOf && alertOf.pt && !SENT.some(a => a.t === alertOf.t) ? [{...alertOf.pt, tip: "at the alert, " + esc(FB.fmt(alertOf.t, ZONE, "hms"))}] : []}),
     new deck.ScatterplotLayer({id: "analysis", data: anal, getPosition: d => d.pos, pickable: true, filled: false, stroked: true,
-      getLineColor: [140, 60, 200], lineWidthMinPixels: 3, radiusMinPixels: 10, updateTriggers: {getPosition: Z}}),
+      getLineColor: [0, 128, 128], lineWidthMinPixels: 3, radiusMinPixels: 10, updateTriggers: {getPosition: Z}}),
     new deck.ScatterplotLayer({id: "sent", data: sent, getPosition: d => d.pos, pickable: true, getFillColor: [240, 140, 0],
       stroked: true, getLineColor: [255, 255, 255], lineWidthMinPixels: 2, radiusMinPixels: 6, updateTriggers: {getPosition: Z}}),
     labels(sent, "sent-labels", [160, 80, 0], -2),
-    labels(anal, "analysis-labels", [110, 40, 170], 2, sentAt),
+    labels(anal, "analysis-labels", [0, 95, 95], 2, sentAt),
     new deck.ScatterplotLayer({id: "plane", data: pos ? [{p: pos, tip: label}] : [], getPosition: d => d.p, pickable: true,
       getFillColor: [220, 60, 40], stroked: true, getLineColor: [255, 255, 255], lineWidthMinPixels: 2, radiusMinPixels: 7}),
     new deck.TextLayer({id: "plane-label", data: pos ? [{p: pos}] : [], getPosition: d => d.p, getText: () => label,

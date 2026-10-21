@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import capture_incident as ci  # noqa: E402
 import flight_watch as fw  # noqa: E402
 import replay  # noqa: E402
+import track_segments  # noqa: E402
 
 DEDUP_S = 180
 
@@ -34,7 +35,7 @@ def join(traces: list[dict]) -> dict | None:
     for d in traces:
         if not d or not d.get("trace"):
             continue
-        info = {k: d.get(k) or info.get(k) for k in ("icao", "r", "t", "desc")}
+        info = {k: d.get(k) or info.get(k) for k in ("icao", "r", "t", "desc", "dbFlags")}
         rows += [[d["timestamp"] + p[0], *p[1:]] for p in d["trace"]]
     if not rows:
         return None
@@ -101,7 +102,9 @@ def analyze(traces: list[dict], hexid: str, t: float, ends: list[dict] | None = 
     traces: readsb trace JSONs of the aircraft (any mix of days / full / recent); ends: [origin,
     destination] as {code (IATA), icao, lat, lon, name}, or fewer when unknown; flight: the IATA flight
     number (board row when an end is TLV). Returns {leg: [start, end], callsign, alerts: [...]} with
-    each alert {time (epoch), kind, message, priority, watched_from}, or {error}."""
+    each alert {time (epoch), kind, message, priority, watched_from}, and `segments`: the leg's position jumps,
+    steep altitude changes, altitude data glitches and gaps (track_segments.segments: drawn as the incident
+    maps draw them), or {error}."""
     tr = join(traces)
     if not tr:
         return {"error": "no trace"}
@@ -123,5 +126,8 @@ def analyze(traces: list[dict], hexid: str, t: float, ends: list[dict] | None = 
             last[a["kind"]] = at
             keep.append({"time": at, "kind": a["kind"], "message": a["message"], "priority": a["priority"],
                          "watched_from": a["watched_from"]})
-    return {"leg": [leg["start"], leg["end"]], "callsign": leg.get("callsign"), "alerts": keep,
+    air = [p for p in track_segments.points(tr) if leg["start"] - 60 <= p["t"] <= leg["end"] + 60
+           and p["alt"] is not None and p["lat"] is not None]
+    segs = track_segments.segments(air, bool((tr.get("dbFlags") or 0) & 1))
+    return {"leg": [leg["start"], leg["end"]], "callsign": leg.get("callsign"), "alerts": keep, "segments": segs,
             "last": leg["last"], "reg": tr.get("r"), "type": tr.get("t"), "desc": tr.get("desc")}

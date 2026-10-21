@@ -42,7 +42,8 @@ UPSTREAM = {"/v2/": ("https://api.adsb.lol", 5),          # prefix -> (host, cac
             "/adsbx/globe_history/": ("https://globe.adsbexchange.com", 600)}  # (path without /adsbx)
 ADSBX_HEADERS = {"Referer": "https://globe.adsbexchange.com/"}  # its history files answer 403 without it
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-SOURCES = {"flight_watch.py", "tests/replay.py", "tools/capture_incident.py", "tools/track_alerts.py"}
+SOURCES = {"flight_watch.py", "tests/replay.py", "tools/capture_incident.py", "tools/track_segments.py",
+           "tools/track_alerts.py"}
 
 
 class Relay:

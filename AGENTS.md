@@ -95,8 +95,15 @@ local helper `tools/serve.py`): the board table and a live map of one flight, pr
 browser. `flight_map.html` is not the incident pages' viewer (`plot_alert.py`), but draws the track at its
 height the same way (x 3 above sea level, `x=` / slider), tilts to 85 deg, and has "show terrain" (`terrain=1`,
 the same terrarium tiles and decoding; 16 Oct 2026: the owner missed tilting low to see heights). It draws the link's
-`a=` alerts (orange) and, with `analyze` or "analyse track", the alerts our checks raise on the drawn trace (purple
-rings, labelled only where they add to `a=`; the button hides / shows them). The owner wanted one procedure, not a
+`a=` alerts (orange) and, with `analyze` or "analyse track", the alerts our checks raise on the drawn trace (teal
+rings, labelled only where they add to `a=`; the button hides / shows them) and the track's position jumps (orange),
+steep altitude changes (purple), altitude data glitches (light purple) and gaps > 2 min (grey), the blue line broken
+at jumps and gaps: `tools/track_segments.py`, shared with `plot_alert.py` (its incident maps draw the same; 21 Oct
+2026, DNA541 over Lebanon: 4 jumps, the monitor had dropped the NIC-0 positions). Opened from an alert (`t=`) the
+analysis starts by itself once the track is drawn, except on a phone (<= 600 px or touch), with Save-Data, or
+`analyze=0` (the owner: optional there, the button stays); started by itself it does not put `analyze` in the
+address (a copied link would start it on a phone). The page and the Python files reach Pages / raw.githubusercontent
+with the same push: a new Python file must be committed with the page that loads it. The owner wanted one procedure, not a
 JS copy of the checks (17 Oct 2026): the page runs `tools/track_alerts.py` - the trace replayed through
 `flight_watch.Monitor` by `tests/replay.py`, watched from the origin, the destination and the point at `t` - under
 Pyodide (CDN, in a worker; `requests` replaced by a stub, the replay never reaches the network). The Python files
