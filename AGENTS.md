@@ -578,6 +578,13 @@ Incident replays (`tests/replay.py`) serve captured real traffic the same way. K
   9/11: NTSB flight path studies and FAA radar records at the National Archives) would be radar
   plots without speeds, and transponders switched off show as the end of the points.
 
+**Measuring a change on past alerts** (`tools/archive_replay.py`, 21 Oct 2026, PR by daniel24ka): the alerts of an
+`alerts.jsonl` replayed on the checkout, per alert kind "then" (in the file) and "now". The traces come from adsb.lol's
+daily archive on GitHub (`adsblol/globe_history_YYYY` releases, ~3.5 GB of tar parts a day, ODbL; plain HTTPS after the
+18 Oct browser check on the trace files), streamed once per day with only the alerted aircraft kept (`archive_traces/`,
+git-ignored); a day is published the next day. One-aircraft replays: MASS_SILENCE, GPS_* and the board-based kinds are not
+judged. Measured on the channel's posts of 16-20 Oct 2026: 84 replayable alerts then, 37 with the code of 21 Oct.
+
 Quick live check: `python flight_watch.py --once -v`. Keep live experiments short.
 A local `standing-data/` checkout is used when present (tests pin `--standing-data` to the URL so
 they keep using the fake feed). Otherwise route/airline files are fetched at most `ROUTE_FILES_PER_CYCLE` (3) per poll: they are 1.1 s apart,
