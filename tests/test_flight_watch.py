@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 from datetime import datetime, timezone
@@ -1853,6 +1854,68 @@ class AnnouncerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BlueskyTests(unittest.TestCase):
+    """Announcements posted to Bluesky with a fake atproto client: threads as the Announcer threads them, a failed
+    post never stops the next, skipped kinds stay off, and nothing happens without the account in the environment."""
+
+    class FakeClient:
+        def __init__(self, fail=()):
+            self.posts, self.fail, self.logins = [], set(fail), []
+
+        def login(self, handle, password):
+            self.logins.append(handle)
+
+        def send_post(self, segments, reply_to=None):
+            n = len(self.posts) + 1
+            if n in self.fail:
+                self.posts.append(None)
+                raise RuntimeError("Bluesky said no")
+            text = "".join(s.get("text") or s["link"] for s in segments)
+            self.posts.append({"n": n, "text": text, "reply_to": reply_to, "url": f"https://bsky.app/post/{n}"})
+            return types.SimpleNamespace(url=f"https://bsky.app/post/{n}", n=n)
+
+    def make(self, fail=(), env=True, *argv):
+        args = fw.parse_args(["--jsonl", "", "--posts", "", "--turn-zones", "", "--telegram-posts", "",
+                              "--bluesky-posts", "", *argv])
+        fake = self.FakeClient(fail)
+        envs = {"BLUESKY_HANDLE": "fw.bsky.social", "BLUESKY_APP_PASSWORD": "app-pw"} if env else {}
+        with mock.patch.dict(os.environ, envs, clear=False):
+            for k in ("BLUESKY_HANDLE", "BLUESKY_APP_PASSWORD", "Bluehandle", "Blueword"):
+                if not env:
+                    os.environ.pop(k, None)
+            bsky = fw.Bluesky(args, client_factory=lambda: fake)
+        n = fw.Notifier(args, None, fw.Announcer(args, out=lambda text: None), console=lambda text: None, bluesky=bsky)
+        return n, fake
+
+    def test_a_flight_is_one_thread(self):
+        n, fake = self.make()
+        n.send(alert_rec("EMERGENCY", "squawk 7700 (GENERAL EMERGENCY)", airline="Flydubai", remote=True, traffic="ARR", route=None))
+        n.send(alert_rec("VERTICAL_RATE", "DESCENT -8000 ft/min, -14.0 deg", minute=3, remote=True, traffic="ARR", route=None))
+        self.assertEqual(len(fake.posts), 2)
+        self.assertIsNone(fake.posts[0]["reply_to"])
+        self.assertIn("Emergency code 7700: FZ1073 Flydubai", fake.posts[0]["text"])
+        first = fake.posts[1]["reply_to"]
+        self.assertEqual(first["parent"].n, 1)
+        self.assertEqual(first["root"].n, 1)
+        self.assertEqual(fake.logins, ["fw.bsky.social"])   # one login for the run
+
+    def test_a_failed_post_does_not_stop_the_next(self):
+        n, fake = self.make(fail={1})
+        n.send(alert_rec("EMERGENCY", "squawk 7700 (GENERAL EMERGENCY)", remote=True, traffic="ARR", route=None))
+        n.send(alert_rec("VERTICAL_RATE", "DESCENT -8000 ft/min, -14.0 deg", minute=3, remote=True, traffic="ARR", route=None))
+        self.assertIsNone(fake.posts[0])
+        self.assertIsNone(fake.posts[1]["reply_to"])   # its parent never made it: top-level
+
+    def test_skipped_kinds_and_no_account(self):
+        n, fake = self.make()
+        n.send(alert_rec("LOST_CONTACT", "silent 120s, last track 90 deg", remote=True, traffic="ARR", route=None))
+        self.assertEqual(fake.posts, [])
+        n, fake = self.make(env=False)
+        self.assertFalse(n.bluesky.enabled)
+        n.send(alert_rec("EMERGENCY", "squawk 7700 (GENERAL EMERGENCY)", remote=True, traffic="ARR", route=None))
+        self.assertEqual(fake.posts, [])
 
 
 class PlotProbeTests(unittest.TestCase):

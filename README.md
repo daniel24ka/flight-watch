@@ -55,7 +55,9 @@ starts a new top-level post. Restored contact only appears as a reply. At most
 ```
 
 Each post is stored as segments (text, or link label + URL) with `root` / `reply_to` ids, so it can
-be published to Bluesky as is (atproto `TextBuilder` + `ReplyRef`) - the next step.
+be published to Bluesky as is (atproto `TextBuilder` + `ReplyRef`): with `BLUESKY_HANDLE` and `BLUESKY_APP_PASSWORD`
+(an app password) in the environment and `pip install atproto`, every announcement is posted there too, threaded per
+flight, from a background thread that never holds up the poll (`--bluesky-skip`, `--bluesky-posts`).
 `python tests/replay.py --feed` shows the FZ1073 incident as it would have been posted.
 
 ## How distant flights are found

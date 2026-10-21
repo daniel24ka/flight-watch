@@ -592,8 +592,13 @@ and fetching a cold start's ~60 files in one cycle held up the local poll for ov
   now covers hot flights every 30 s, but a flight that has not alerted yet is still sampled only by
   the follow request.
 
-- **Next step: publish announcements to Bluesky.** `Announcer` already builds posts as
-  segments + `root`/`reply_to`. The owner's `yuval-harpaz/astro` bots show the pattern:
+- **Bluesky** (`Bluesky`, 21 Oct 2026, PR by daniel24ka): on when `BLUESKY_HANDLE` + `BLUESKY_APP_PASSWORD` (or the astro
+  bots' `Bluehandle` / `Blueword`) are in the environment; `atproto` is imported only then. The Announcer's posts go through
+  a queue to one worker thread (never the poll loop); a failed login waits 10 min, a failed post is logged and the next one
+  goes on (a reply whose parent never made it is posted top-level). Local post id -> strong ref threads the replies for the
+  run. `--bluesky-skip` (default as `--telegram-skip`), `--bluesky-posts` (`posts_bluesky.jsonl`, with the bsky.app link or
+  `sent: false`). Tests: `BlueskyTests` with a fake client. The pattern it follows, from the owner's
+  `yuval-harpaz/astro` bots:
   `from atproto import Client, client_utils, models`; `Client().login(os.environ['Bluehandle'],
   os.environ['Blueword'])` (app password from env, never committed); `client_utils.TextBuilder()`
   with `.text()` / `.link(label, url)`; `send_post(builder)` (or `send_post(text=builder,
