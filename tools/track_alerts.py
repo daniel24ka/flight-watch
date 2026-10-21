@@ -86,7 +86,8 @@ def replay_watch(tr: dict, hexid: str, leg: dict, callsign: str | None, ends: li
                       "CHPTOL": when, "CHLOC1": other, "CHLOC1D": other,
                       "CHRMINE": "DEPARTED" if direction == "D" else "ON TIME"})
     fixture = {"meta": meta, "board": board, "routes": routes, "airports": airports,
-               "aircraft": {hexid: {"r": tr.get("r"), "t": tr.get("t"), "desc": tr.get("desc"), "points": pts}}}
+               "aircraft": {hexid: {"r": tr.get("r"), "t": tr.get("t"), "desc": tr.get("desc"), "dbFlags": tr.get("dbFlags"),
+                                    "points": pts}}}
     alerts, _, _ = replay.run(fixture)
     return [{**a, "watched_from": home.get("label", home["code"])} for a in alerts if a["hex"] == hexid]
 

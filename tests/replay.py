@@ -82,6 +82,8 @@ class ReplayFeed:
         t, lat, lon, alt, gs, trk, vr, ex = states[i]
         ac = {"hex": hexid, "lat": lat, "lon": lon, "seen": round(now - t, 1),
               "seen_pos": round(now - t, 1), "r": a.get("r"), "t": a.get("t")}
+        if a.get("dbFlags"):  # the military bit: without it a replay alerts a military aircraft as a civil one
+            ac["dbFlags"] = a["dbFlags"]
         if alt is not None:
             ac["alt_baro"] = alt
         for k, v in (("gs", gs), ("track", trk), ("baro_rate", vr)):

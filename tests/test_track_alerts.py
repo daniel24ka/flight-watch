@@ -66,6 +66,28 @@ class TrackAlertsFZ1073(unittest.TestCase):
         self.assertEqual(len(jumps), 2, got["segments"])  # out and back
         self.assertTrue(all(g["text"].startswith("jump: 55.6 km in 10 s") for g in jumps), jumps)
 
+    def test_a_military_aircraft_is_military_in_the_replay(self):
+        """The trace's dbFlags (bit 0: military) reach the replayed Monitor, so "analyse track" and the squawk
+        replays apply the military rules (MILITARY_QUIET_S, POSITION_JUMP limits, TOWARD_ISRAEL exempt) as the
+        live monitor does. Before, every replayed aircraft was civil: CHLE1B (PC21, 18 Oct 2026) analysed on
+        the map gave the alerts the live monitor holds back."""
+        from unittest import mock
+        day0 = 1790726400
+        rows = [[1790746000 + 10 * i, 32.0, 36.0 + 0.012 * i, 14000, 250, 90, 0, "CHLE1B", None, None, None]
+                for i in range(60)]
+        tr = {**readsb_trace(rows, day0), "icao": "740e2b", "r": "1178", "t": "PC21", "dbFlags": 1}
+        seen = {}
+        real_run = replay.run
+
+        def run(fixture, *a, **kw):
+            alerts, mon, feed = real_run(fixture, *a, **kw)
+            seen.update({h: t.military for h, t in mon.tracks.items()})
+            return alerts, mon, feed
+
+        with mock.patch.object(track_alerts.replay, "run", run):
+            track_alerts.analyze([tr], "740e2b", rows[30][0])
+        self.assertTrue(seen.get("740e2b"), seen)
+
     def test_no_trace_or_no_flight_then(self):
         self.assertIn("error", track_alerts.analyze([], FZ1073, 1790746294))
         self.assertIn("error", track_alerts.analyze([readsb_trace([[1790746294, 30, 38, 15000, 400, 300, 0,

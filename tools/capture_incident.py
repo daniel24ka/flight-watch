@@ -304,7 +304,7 @@ def main() -> None:
         pts = trace_points(tr, t0, t1, a.step)
         if not any(t0 <= q[0] <= t1 for q in pts):
             continue
-        aircraft[h] = {"r": tr.get("r"), "t": tr.get("t"), "desc": tr.get("desc"), "points": pts}
+        aircraft[h] = {"r": tr.get("r"), "t": tr.get("t"), "desc": tr.get("desc"), "dbFlags": tr.get("dbFlags"), "points": pts}
         if i % 20 == 0:
             print(f"  {i}/{len(wanted)} traces", file=sys.stderr)
 
